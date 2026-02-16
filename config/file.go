@@ -211,8 +211,8 @@ p2p.listen = 0.0.0.0
 p2p.port = ` + defaultPort(network) + `
 p2p.maxpeers = 50
 
-# Seed nodes (comma-separated)
-# p2p.seeds = node1.example.com:30303,node2.example.com:30303
+# Seed nodes (comma-separated libp2p multiaddrs)
+p2p.seeds = /ip4/149.102.158.68/tcp/30303/p2p/12D3KooWSU83DfT1QXgji1XiC2d9RtkGFKt5zwG4sQQVN2R3nNGG
 
 # Disable peer discovery (for private networks)
 # p2p.nodiscover = false

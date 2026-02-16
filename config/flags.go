@@ -84,7 +84,7 @@ func ParseFlags() *Flags {
 	// P2P
 	fs.BoolVar(&f.P2P, "p2p", true, "Enable P2P networking")
 	fs.IntVar(&f.P2PPort, "p2p-port", 0, "P2P listen port")
-	fs.StringVar(&f.Seeds, "seeds", "", "Seed nodes (comma-separated)")
+	fs.StringVar(&f.Seeds, "seeds", "", "Seed nodes as comma-separated libp2p multiaddrs")
 	fs.IntVar(&f.MaxPeers, "maxpeers", 0, "Maximum number of peers")
 	fs.BoolVar(&f.NoDiscover, "nodiscover", false, "Disable peer discovery")
 	fs.BoolVar(&f.DHTServer, "dht-server", false, "Run DHT in server mode (for seeds/validators)")
@@ -283,7 +283,7 @@ Core Options:
 P2P Options:
   --p2p           Enable P2P networking (default: true)
   --p2p-port      P2P listen port (mainnet: 30303, testnet: 30304)
-  --seeds         Seed nodes (comma-separated)
+  --seeds         Seed nodes as comma-separated libp2p multiaddrs
   --maxpeers      Maximum number of peers (default: 50)
   --nodiscover    Disable peer discovery
   --dht-server    Run DHT in server mode (for seed nodes/validators)

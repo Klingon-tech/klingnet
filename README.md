@@ -576,7 +576,7 @@ Core:
 P2P:
   --p2p               Enable/disable P2P networking (default: true)
   --p2p-port          Listen port (mainnet: 30303, testnet: 30304)
-  --seeds             Seed nodes (comma-separated)
+  --seeds             Seed nodes as comma-separated libp2p multiaddrs
   --maxpeers          Max peers (default: 50)
   --nodiscover        Disable mDNS + DHT discovery
   --dht-server        Run DHT in server mode (for seeds/validators)

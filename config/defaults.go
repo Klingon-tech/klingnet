@@ -15,8 +15,9 @@ func DefaultMainnet() *Config {
 			//   "/ip4/203.0.113.1/tcp/30303/p2p/12D3KooW..."
 			//   "/dns4/seed1.klingnet.io/tcp/30303/p2p/12D3KooW..."
 			// Run seed nodes with --dht-server for optimal DHT performance.
-			// Real addresses will be filled when seed servers are provisioned.
-			Seeds: []string{},
+			Seeds: []string{
+				"/ip4/149.102.158.68/tcp/30303/p2p/12D3KooWSU83DfT1QXgji1XiC2d9RtkGFKt5zwG4sQQVN2R3nNGG",
+			},
 		},
 		RPC: RPCConfig{
 			Enabled:    true,
