@@ -1,0 +1,46 @@
+# Binaries (root-level only, not cmd/ source dirs)
+/bin/
+/dist/
+/klingnetd
+/klingnet-cli
+/klingnet-qt
+/testnet
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+coverage.out
+coverage.html
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data directory
+data/
+
+# Debug
+debug
+*.log
+
+# Environment
+.env
+.env.local
+validator.key
+
+# Qt build output
+cmd/klingnet-qt/build/bin/

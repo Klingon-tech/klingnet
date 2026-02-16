@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.local
+
+# Wails auto-generated bindings (regenerated on every build)
+wailsjs/
