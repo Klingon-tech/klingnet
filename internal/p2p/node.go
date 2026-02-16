@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -433,6 +434,11 @@ func (n *Node) handleBlockMessage(msg *pubsub.Message) {
 }
 
 func (n *Node) startMDNS() {
+	if runtime.GOOS == "windows" {
+		// mDNS multicast setsockopt fails on many Windows network adapters
+		// (virtual, VPN, WSL). DHT handles discovery, so skip mDNS.
+		return
+	}
 	svc := mdns.NewMdnsService(n.host, n.rendezvous(), &discoveryNotifee{node: n})
 	// mDNS failure is non-fatal.
 	_ = svc.Start()

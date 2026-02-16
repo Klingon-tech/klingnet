@@ -44,3 +44,4 @@ validator.key
 
 # Qt build output
 cmd/klingnet-qt/build/bin/
+zip.sh
