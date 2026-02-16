@@ -638,6 +638,7 @@ func (n *Node) runStartupSync() {
 	if len(peers) < limit {
 		limit = len(peers)
 	}
+	localTip := n.ch.TipHash().String()
 	for _, p := range peers[:limit] {
 		reqCtx, cancel := context.WithTimeout(n.ctx, 5*time.Second)
 		resp, err := n.syncer.RequestHeight(reqCtx, p.ID)
@@ -649,6 +650,13 @@ func (n *Node) runStartupSync() {
 			bestHeight = resp.Height
 			bestTipHash = resp.TipHash
 			bestPeer = p.ID
+		} else if resp.Height == bestHeight && resp.TipHash != bestTipHash {
+			// Peer at same height with a different tip — track the one
+			// that also differs from our local tip for fork detection.
+			if resp.TipHash != localTip {
+				bestTipHash = resp.TipHash
+				bestPeer = p.ID
+			}
 		}
 	}
 
@@ -656,7 +664,6 @@ func (n *Node) runStartupSync() {
 
 	// Detect same-height fork: heights match but tips differ.
 	if bestHeight == localHeight && bestHeight > 0 {
-		localTip := n.ch.TipHash().String()
 		if bestTipHash != "" && bestTipHash != localTip {
 			n.logger.Info().
 				Uint64("height", localHeight).
@@ -850,22 +857,28 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 				selectedPubKey := n.poaEngine.SelectValidator(nextHeight, tipHash)
 
 				inWarmup := time.Now().Before(warmupUntil)
-				selectedOnline := n.tracker != nil && selectedPubKey != nil &&
-					(n.tracker.IsOnline(selectedPubKey) || inWarmup)
-				if selectedOnline {
-					n.logger.Debug().
-						Uint64("height", nextHeight).
-						Msg("Not selected, waiting grace period")
 
-					select {
-					case <-n.ctx.Done():
-						return
-					case <-time.After(gracePeriod):
-					}
+				// During warmup or when the selected validator is online,
+				// non-selected validators must NOT produce (prevents forks).
+				if inWarmup || (n.tracker != nil && selectedPubKey != nil &&
+					n.tracker.IsOnline(selectedPubKey)) {
+					continue
+				}
 
-					if n.ch.Height() >= nextHeight {
-						continue
-					}
+				// Selected validator appears offline. Wait grace period
+				// before stepping in as backup.
+				n.logger.Debug().
+					Uint64("height", nextHeight).
+					Msg("Selected validator offline, waiting grace period")
+
+				select {
+				case <-n.ctx.Done():
+					return
+				case <-time.After(gracePeriod):
+				}
+
+				if n.ch.Height() >= nextHeight {
+					continue
 				}
 
 				if selectedPubKey != nil && n.tracker != nil {
@@ -1281,6 +1294,7 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 	if len(peers) < limit {
 		limit = len(peers)
 	}
+	localTip := ch.TipHash().String()
 	for _, p := range peers[:limit] {
 		reqCtx, cancel := context.WithTimeout(n.ctx, 5*time.Second)
 		resp, err := n.syncer.RequestSubChainHeight(reqCtx, p.ID, chainIDHex)
@@ -1292,6 +1306,11 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 			bestHeight = resp.Height
 			bestTipHash = resp.TipHash
 			bestPeer = p.ID
+		} else if resp.Height == bestHeight && resp.TipHash != bestTipHash {
+			if resp.TipHash != localTip {
+				bestTipHash = resp.TipHash
+				bestPeer = p.ID
+			}
 		}
 	}
 
@@ -1299,7 +1318,6 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 
 	// Detect same-height fork: heights match but tips differ.
 	if bestHeight == localHeight && bestHeight > 0 {
-		localTip := ch.TipHash().String()
 		if bestTipHash != "" && bestTipHash != localTip {
 			logger.Info().
 				Uint64("height", localHeight).
@@ -1553,17 +1571,24 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 				selectedPubKey := poaEngine.SelectValidator(nextHeight, tipHash)
 
 				inWarmup := time.Now().Before(warmupUntil)
-				selectedOnline := tracker != nil && selectedPubKey != nil &&
-					(tracker.IsOnline(selectedPubKey) || inWarmup)
-				if selectedOnline {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(gracePeriod):
-					}
-					if ch.Height() >= nextHeight {
-						continue
-					}
+
+				// During warmup or when the selected validator is online,
+				// non-selected validators must NOT produce (prevents forks).
+				if inWarmup || (tracker != nil && selectedPubKey != nil &&
+					tracker.IsOnline(selectedPubKey)) {
+					continue
+				}
+
+				// Selected validator appears offline. Wait grace period
+				// before stepping in as backup.
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(gracePeriod):
+				}
+
+				if ch.Height() >= nextHeight {
+					continue
 				}
 
 				if selectedPubKey != nil && tracker != nil {
