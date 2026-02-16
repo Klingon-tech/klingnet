@@ -233,6 +233,10 @@ type SubChainInfoResult struct {
 	Name              string `json:"name"`
 	Symbol            string `json:"symbol"`
 	ConsensusType     string `json:"consensus_type"`
+	BlockTime         int    `json:"block_time"`
+	BlockReward       uint64 `json:"block_reward"`
+	MaxSupply         uint64 `json:"max_supply"`
+	MinFee            uint64 `json:"min_fee"`
 	Syncing           bool   `json:"syncing"`
 	Height            uint64 `json:"height"`
 	TipHash           string `json:"tip_hash"`
