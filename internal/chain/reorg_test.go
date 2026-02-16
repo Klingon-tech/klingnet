@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/Klingon-tech/klingnet-chain/config"
@@ -129,12 +130,20 @@ func TestReorg_LongerForkWins(t *testing.T) {
 	if err := ch.ProcessBlock(blkB2); err != nil {
 		t.Fatalf("process B2: %v", err)
 	}
-	// B2 at height 2 is same as current tip, no reorg.
+	// B2 at height 2: tie-breaker picks whichever hash is lower.
 	if ch.Height() != 2 {
 		t.Errorf("after B2: expected height 2, got %d", ch.Height())
 	}
-	if ch.TipHash() != blkA2.Hash() {
-		t.Errorf("after B2: tip should still be A2")
+	a2Hash := blkA2.Hash()
+	b2Hash := blkB2.Hash()
+	if bytes.Compare(b2Hash[:], a2Hash[:]) < 0 {
+		if ch.TipHash() != b2Hash {
+			t.Errorf("after B2: tie-breaker should pick B2 (lower hash)")
+		}
+	} else {
+		if ch.TipHash() != a2Hash {
+			t.Errorf("after B2: tie-breaker should keep A2 (lower hash)")
+		}
 	}
 
 	// B3 at height 3 is longer, should trigger reorg.
@@ -150,7 +159,7 @@ func TestReorg_LongerForkWins(t *testing.T) {
 	}
 }
 
-func TestReorg_SameLengthNoSwitch(t *testing.T) {
+func TestReorg_SameLengthTieBreaker(t *testing.T) {
 	ch, _, addr, _ := reorgTestChain(t)
 
 	genesisHash := ch.TipHash()
@@ -160,7 +169,6 @@ func TestReorg_SameLengthNoSwitch(t *testing.T) {
 	if err := ch.ProcessBlock(blkA1); err != nil {
 		t.Fatalf("process A1: %v", err)
 	}
-	tipA := ch.TipHash()
 
 	// Fork chain: B1 (same height).
 	blkB1 := buildCoinbaseBlock(t, ch, genesisHash, 1, addr, 100)
@@ -168,12 +176,19 @@ func TestReorg_SameLengthNoSwitch(t *testing.T) {
 		t.Fatalf("process B1: %v", err)
 	}
 
-	// Should not have reorged — same length.
 	if ch.Height() != 1 {
 		t.Errorf("expected height 1, got %d", ch.Height())
 	}
-	if ch.TipHash() != tipA {
-		t.Errorf("tip should still be A1")
+
+	// PoA tie-breaker: whichever block hash is lower wins.
+	a1Hash := blkA1.Hash()
+	b1Hash := blkB1.Hash()
+	expectedTip := a1Hash
+	if bytes.Compare(b1Hash[:], a1Hash[:]) < 0 {
+		expectedTip = b1Hash
+	}
+	if ch.TipHash() != expectedTip {
+		t.Errorf("tie-breaker: expected tip %s, got %s", expectedTip, ch.TipHash())
 	}
 }
 

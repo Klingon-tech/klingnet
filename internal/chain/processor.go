@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -100,6 +101,10 @@ func (c *Chain) ProcessBlock(blk *block.Block) error {
 		// For PoW: always attempt reorg (Reorg itself compares cumulative work).
 		// For PoA: reorg only if the new branch is strictly longer (height-based).
 		shouldAttempt := blk.Header.Height > c.state.Height
+		// PoA tie-break: lower block hash wins for deterministic convergence.
+		if !shouldAttempt && !c.isPoWEngine() && blk.Header.Height == c.state.Height {
+			shouldAttempt = bytes.Compare(hash[:], c.state.TipHash[:]) < 0
+		}
 		if c.isPoWEngine() {
 			shouldAttempt = true // Let Reorg decide based on cumulative difficulty.
 		}

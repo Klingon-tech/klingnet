@@ -210,6 +210,7 @@ func New(cfg *config.Config) (*Node, error) {
 	// ── 10. P2P ─────────────────────────────────────────────────────
 	var p2pNode *p2p.Node
 	var syncer *p2p.Syncer
+	var nodeRef *Node // set after Node is constructed; used by block handler closure
 	if cfg.P2P.Enabled {
 		p2pNode = p2p.New(p2p.Config{
 			ListenAddr: cfg.P2P.ListenAddr,
@@ -227,7 +228,8 @@ func New(cfg *config.Config) (*Node, error) {
 		p2pNode.SetGenesisHash(genesisHash)
 		p2pNode.SetHeightFn(func() uint64 { return ch.Height() })
 
-		// Block handler.
+		// Block handler with sync trigger for unknown parents.
+		var rootSyncing atomic.Bool
 		p2pNode.SetBlockHandler(func(from peer.ID, data []byte) {
 			var blk block.Block
 			if err := json.Unmarshal(data, &blk); err != nil {
@@ -236,6 +238,14 @@ func New(cfg *config.Config) (*Node, error) {
 				return
 			}
 			if err := ch.ProcessBlock(&blk); err != nil {
+				if errors.Is(err, chain.ErrPrevNotFound) && rootSyncing.CompareAndSwap(false, true) {
+					go func() {
+						defer rootSyncing.Store(false)
+						if nodeRef != nil {
+							nodeRef.runStartupSync()
+						}
+					}()
+				}
 				if !errors.Is(err, chain.ErrBlockKnown) &&
 					!errors.Is(err, chain.ErrPrevNotFound) &&
 					!errors.Is(err, chain.ErrForkDetected) {
@@ -477,6 +487,9 @@ func New(cfg *config.Config) (*Node, error) {
 		cancel:       cancel,
 	}
 
+	// Wire nodeRef for the root chain block handler sync trigger.
+	nodeRef = n
+
 	// ── 12. Sub-chain manager ───────────────────────────────────────
 	if genesis.Protocol.SubChain.Enabled {
 		if err := n.setupSubChains(); err != nil {
@@ -620,6 +633,7 @@ func (n *Node) runStartupSync() {
 
 	var bestPeer peer.ID
 	var bestHeight uint64
+	var bestTipHash string
 	limit := 3
 	if len(peers) < limit {
 		limit = len(peers)
@@ -633,11 +647,27 @@ func (n *Node) runStartupSync() {
 		}
 		if resp.Height > bestHeight {
 			bestHeight = resp.Height
+			bestTipHash = resp.TipHash
 			bestPeer = p.ID
 		}
 	}
 
 	localHeight := n.ch.Height()
+
+	// Detect same-height fork: heights match but tips differ.
+	if bestHeight == localHeight && bestHeight > 0 {
+		localTip := n.ch.TipHash().String()
+		if bestTipHash != "" && bestTipHash != localTip {
+			n.logger.Info().
+				Uint64("height", localHeight).
+				Str("local_tip", localTip[:16]+"...").
+				Str("peer_tip", bestTipHash[:16]+"...").
+				Msg("Same-height fork detected, resolving")
+			n.resolveFork(bestPeer, localHeight, bestHeight)
+		}
+		return
+	}
+
 	if bestHeight <= localHeight {
 		n.logger.Info().Uint64("height", localHeight).Msg("Chain is up to date")
 		return
@@ -712,31 +742,30 @@ func (n *Node) runStartupSync() {
 }
 
 func (n *Node) resolveFork(peerID peer.ID, failedHeight, peerTip uint64) {
-	const maxForkDepth = 500
-
 	searchFrom := failedHeight - 1
 	if searchFrom > n.ch.Height() {
 		searchFrom = n.ch.Height()
 	}
 
-	lower := uint64(0)
-	if searchFrom > maxForkDepth {
-		lower = searchFrom - maxForkDepth
-	}
-
 	var ancestorHeight uint64
 	found := false
 
-	for h := searchFrom; h > lower; h-- {
+	for h := searchFrom; ; h-- {
 		reqCtx, cancel := context.WithTimeout(n.ctx, 5*time.Second)
 		peerBlocks, err := n.syncer.RequestBlocks(reqCtx, peerID, h, 1)
 		cancel()
 		if err != nil || len(peerBlocks) == 0 {
+			if h == 0 {
+				break
+			}
 			continue
 		}
 
 		localBlk, err := n.ch.GetBlockByHeight(h)
 		if err != nil {
+			if h == 0 {
+				break
+			}
 			continue
 		}
 
@@ -745,12 +774,15 @@ func (n *Node) resolveFork(peerID peer.ID, failedHeight, peerTip uint64) {
 			found = true
 			break
 		}
+
+		if h == 0 {
+			break // Reached genesis, prevent uint64 underflow.
+		}
 	}
 
 	if !found {
 		n.logger.Warn().
 			Uint64("searched_from", searchFrom).
-			Uint64("max_depth", maxForkDepth).
 			Msg("Fork resolution failed: no common ancestor found")
 		return
 	}
@@ -839,6 +871,11 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 				if selectedPubKey != nil && n.tracker != nil {
 					n.tracker.RecordMiss(selectedPubKey)
 				}
+			}
+
+			// Re-check: a block may have arrived via gossip since we read the tip.
+			if n.ch.Height() >= nextHeight {
+				continue
 			}
 
 			blk, err := m.ProduceBlock()
@@ -1239,6 +1276,7 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 
 	var bestPeer peer.ID
 	var bestHeight uint64
+	var bestTipHash string
 	limit := 3
 	if len(peers) < limit {
 		limit = len(peers)
@@ -1252,11 +1290,25 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 		}
 		if resp.Height > bestHeight {
 			bestHeight = resp.Height
+			bestTipHash = resp.TipHash
 			bestPeer = p.ID
 		}
 	}
 
 	localHeight := ch.Height()
+
+	// Detect same-height fork: heights match but tips differ.
+	if bestHeight == localHeight && bestHeight > 0 {
+		localTip := ch.TipHash().String()
+		if bestTipHash != "" && bestTipHash != localTip {
+			logger.Info().
+				Uint64("height", localHeight).
+				Msg("Same-height sub-chain fork detected, resolving")
+			n.resolveSubChainFork(ch, pool, bestPeer, chainIDHex, localHeight, bestHeight, logger)
+		}
+		return
+	}
+
 	if bestHeight <= localHeight {
 		return
 	}
@@ -1331,31 +1383,30 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 func (n *Node) resolveSubChainFork(ch *chain.Chain, pool *mempool.Pool,
 	peerID peer.ID, chainIDHex string, failedHeight, peerTip uint64, logger zerolog.Logger) {
 
-	const maxForkDepth = 500
-
 	searchFrom := failedHeight - 1
 	if searchFrom > ch.Height() {
 		searchFrom = ch.Height()
 	}
 
-	lower := uint64(0)
-	if searchFrom > maxForkDepth {
-		lower = searchFrom - maxForkDepth
-	}
-
 	var ancestorHeight uint64
 	found := false
 
-	for h := searchFrom; h > lower; h-- {
+	for h := searchFrom; ; h-- {
 		reqCtx, cancel := context.WithTimeout(n.ctx, 5*time.Second)
 		peerBlocks, err := n.syncer.RequestSubChainBlocks(reqCtx, peerID, chainIDHex, h, 1)
 		cancel()
 		if err != nil || len(peerBlocks) == 0 {
+			if h == 0 {
+				break
+			}
 			continue
 		}
 
 		localBlk, err := ch.GetBlockByHeight(h)
 		if err != nil {
+			if h == 0 {
+				break
+			}
 			continue
 		}
 
@@ -1364,12 +1415,15 @@ func (n *Node) resolveSubChainFork(ch *chain.Chain, pool *mempool.Pool,
 			found = true
 			break
 		}
+
+		if h == 0 {
+			break // Reached genesis, prevent uint64 underflow.
+		}
 	}
 
 	if !found {
 		logger.Warn().
 			Uint64("searched_from", searchFrom).
-			Uint64("max_depth", maxForkDepth).
 			Msg("Sub-chain fork resolution failed: no common ancestor found")
 		return
 	}
@@ -1515,6 +1569,11 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 				if selectedPubKey != nil && tracker != nil {
 					tracker.RecordMiss(selectedPubKey)
 				}
+			}
+
+			// Re-check: a block may have arrived via gossip since we read the tip.
+			if ch.Height() >= nextHeight {
+				continue
 			}
 
 			blk, err := m.ProduceBlock()
