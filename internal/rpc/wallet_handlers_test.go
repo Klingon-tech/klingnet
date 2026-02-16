@@ -69,7 +69,7 @@ func setupWalletTestEnv(t *testing.T) *walletTestEnv {
 	utxoStore := utxo.NewStore(db)
 
 	validatorPubBytes, _ := hex.DecodeString(pubHex)
-	engine, err := consensus.NewPoA([][]byte{validatorPubBytes})
+	engine, err := consensus.NewPoA([][]byte{validatorPubBytes}, 3)
 	if err != nil {
 		t.Fatalf("create poa: %v", err)
 	}
@@ -925,7 +925,7 @@ func setupSubChainWalletEnv(t *testing.T) (*walletTestEnv, *subchain.Manager) {
 	utxoStore := utxo.NewStore(db)
 
 	validatorPubBytes, _ := hex.DecodeString(pubHex)
-	engine, err := consensus.NewPoA([][]byte{validatorPubBytes})
+	engine, err := consensus.NewPoA([][]byte{validatorPubBytes}, 3)
 	if err != nil {
 		t.Fatalf("create poa: %v", err)
 	}

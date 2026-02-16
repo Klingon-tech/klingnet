@@ -841,9 +841,6 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 	ticker := time.NewTicker(blockTime)
 	defer ticker.Stop()
 
-	gracePeriod := 2 * blockTime
-	warmupUntil := time.Now().Add(60 * time.Second)
-
 	for {
 		select {
 		case <-n.ctx.Done():
@@ -851,38 +848,39 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 			return
 		case <-ticker.C:
 			nextHeight := n.ch.Height() + 1
-			tipHash := n.ch.TipHash()
+			now := uint64(time.Now().Unix())
 
-			if n.poaEngine != nil && !n.poaEngine.IsSelected(nextHeight, tipHash) {
-				selectedPubKey := n.poaEngine.SelectValidator(nextHeight, tipHash)
+			// Time-slot-based election: check if we're in-turn.
+			if n.poaEngine != nil && !n.poaEngine.IsInTurn(now) {
+				// Not in-turn. Identify the expected in-turn validator.
+				expectedPub := n.poaEngine.SlotValidator(now)
 
-				inWarmup := time.Now().Before(warmupUntil)
-
-				// During warmup or when the selected validator is online,
-				// non-selected validators must NOT produce (prevents forks).
-				if inWarmup || (n.tracker != nil && selectedPubKey != nil &&
-					n.tracker.IsOnline(selectedPubKey)) {
+				// If the in-turn validator is online, don't produce.
+				if n.tracker != nil && expectedPub != nil && n.tracker.IsOnline(expectedPub) {
 					continue
 				}
 
-				// Selected validator appears offline. Wait grace period
-				// before stepping in as backup.
+				// In-turn validator appears offline. Wait staggered backup delay
+				// (proportional to our distance from the in-turn slot).
+				delay := n.poaEngine.BackupDelay(now)
 				n.logger.Debug().
 					Uint64("height", nextHeight).
-					Msg("Selected validator offline, waiting grace period")
+					Dur("backup_delay", delay).
+					Msg("Not in-turn, waiting backup delay")
 
 				select {
 				case <-n.ctx.Done():
 					return
-				case <-time.After(gracePeriod):
+				case <-time.After(delay):
 				}
 
+				// Re-check after delay: a block may have arrived.
 				if n.ch.Height() >= nextHeight {
 					continue
 				}
 
-				if selectedPubKey != nil && n.tracker != nil {
-					n.tracker.RecordMiss(selectedPubKey)
+				if expectedPub != nil && n.tracker != nil {
+					n.tracker.RecordMiss(expectedPub)
 				}
 			}
 
@@ -1555,9 +1553,6 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 	ticker := time.NewTicker(blockTime)
 	defer ticker.Stop()
 
-	gracePeriod := 2 * blockTime
-	warmupUntil := time.Now().Add(60 * time.Second)
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -1565,34 +1560,31 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 			return
 		case <-ticker.C:
 			nextHeight := ch.Height() + 1
-			tipHash := ch.TipHash()
+			now := uint64(time.Now().Unix())
 
-			if !poaEngine.IsSelected(nextHeight, tipHash) {
-				selectedPubKey := poaEngine.SelectValidator(nextHeight, tipHash)
+			// Time-slot-based election: check if we're in-turn.
+			if !poaEngine.IsInTurn(now) {
+				expectedPub := poaEngine.SlotValidator(now)
 
-				inWarmup := time.Now().Before(warmupUntil)
-
-				// During warmup or when the selected validator is online,
-				// non-selected validators must NOT produce (prevents forks).
-				if inWarmup || (tracker != nil && selectedPubKey != nil &&
-					tracker.IsOnline(selectedPubKey)) {
+				// If the in-turn validator is online, don't produce.
+				if tracker != nil && expectedPub != nil && tracker.IsOnline(expectedPub) {
 					continue
 				}
 
-				// Selected validator appears offline. Wait grace period
-				// before stepping in as backup.
+				// In-turn validator appears offline. Wait staggered backup delay.
+				delay := poaEngine.BackupDelay(now)
 				select {
 				case <-ctx.Done():
 					return
-				case <-time.After(gracePeriod):
+				case <-time.After(delay):
 				}
 
 				if ch.Height() >= nextHeight {
 					continue
 				}
 
-				if selectedPubKey != nil && tracker != nil {
-					tracker.RecordMiss(selectedPubKey)
+				if expectedPub != nil && tracker != nil {
+					tracker.RecordMiss(expectedPub)
 				}
 			}
 

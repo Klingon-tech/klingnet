@@ -224,7 +224,7 @@ func buildNode(name string, gen *config.Genesis, validators [][]byte,
 	db := storage.NewMemory()
 	utxoStore := utxo.NewStore(db)
 
-	poa, err := consensus.NewPoA(validators)
+	poa, err := consensus.NewPoA(validators, gen.Protocol.Consensus.BlockTime)
 	if err != nil {
 		return nil, fmt.Errorf("create poa: %w", err)
 	}

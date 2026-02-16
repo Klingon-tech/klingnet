@@ -1,7 +1,6 @@
 package chain
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,16 +96,12 @@ func (c *Chain) ProcessBlock(blk *block.Block) error {
 			return fmt.Errorf("store fork block: %w", err)
 		}
 
-		// Decide whether to reorg.
-		// For PoW: always attempt reorg (Reorg itself compares cumulative work).
-		// For PoA: reorg only if the new branch is strictly longer (height-based).
-		shouldAttempt := blk.Header.Height > c.state.Height
-		// PoA tie-break: lower block hash wins for deterministic convergence.
-		if !shouldAttempt && !c.isPoWEngine() && blk.Header.Height == c.state.Height {
-			shouldAttempt = bytes.Compare(hash[:], c.state.TipHash[:]) < 0
-		}
+		// Decide whether to attempt reorg.
+		// Same-height or longer forks are candidates — Reorg itself compares
+		// cumulative difficulty to decide (works for both PoA and PoW).
+		shouldAttempt := blk.Header.Height >= c.state.Height
 		if c.isPoWEngine() {
-			shouldAttempt = true // Let Reorg decide based on cumulative difficulty.
+			shouldAttempt = true // PoW: difficulty variations can make shorter chains heavier.
 		}
 		if shouldAttempt {
 			if err := c.Reorg(hash); err != nil {
@@ -164,10 +159,8 @@ func (c *Chain) ProcessBlock(blk *block.Block) error {
 	if err := c.blocks.SetTip(hash, blk.Header.Height, c.state.Supply); err != nil {
 		return fmt.Errorf("set tip: %w", err)
 	}
-	if blk.Header.Difficulty > 0 {
-		if err := c.blocks.SetCumulativeDifficulty(c.state.CumulativeDifficulty); err != nil {
-			return fmt.Errorf("set cumulative difficulty: %w", err)
-		}
+	if err := c.blocks.SetCumulativeDifficulty(c.state.CumulativeDifficulty); err != nil {
+		return fmt.Errorf("set cumulative difficulty: %w", err)
 	}
 
 	// Scan for sub-chain registration outputs.

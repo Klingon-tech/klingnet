@@ -137,22 +137,22 @@ func (c *Chain) Reorg(newTipHash types.Hash) error {
 	forkHeight := newBranch[0].Header.Height - 1
 	oldHeight := c.state.Height
 
-	// For PoW chains, compare cumulative work instead of height.
-	if c.isPoWEngine() {
-		var newBranchWork, oldBranchWork uint64
-		for _, blk := range newBranch {
-			newBranchWork += blk.Header.Difficulty
+	// Compare cumulative work (applies to both PoA and PoW).
+	// For PoA: in-turn blocks have Difficulty=2, out-of-turn have Difficulty=1,
+	// so the in-turn chain always wins. Equal work → keep current (no flip-flopping).
+	var newBranchWork, oldBranchWork uint64
+	for _, blk := range newBranch {
+		newBranchWork += blk.Header.Difficulty
+	}
+	for h := forkHeight + 1; h <= oldHeight; h++ {
+		blk, err := c.blocks.GetBlockByHeight(h)
+		if err != nil {
+			return fmt.Errorf("load old block for work comparison at height %d: %w", h, err)
 		}
-		for h := forkHeight + 1; h <= oldHeight; h++ {
-			blk, err := c.blocks.GetBlockByHeight(h)
-			if err != nil {
-				return fmt.Errorf("load old block for work comparison at height %d: %w", h, err)
-			}
-			oldBranchWork += blk.Header.Difficulty
-		}
-		if newBranchWork <= oldBranchWork {
-			return nil // New branch doesn't have more work — keep current chain.
-		}
+		oldBranchWork += blk.Header.Difficulty
+	}
+	if newBranchWork <= oldBranchWork {
+		return nil // New branch doesn't have more work — keep current chain.
 	}
 
 	// Write reorg checkpoint so we can recover if the node crashes mid-reorg.

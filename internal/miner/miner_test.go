@@ -103,7 +103,7 @@ func testMiner(t *testing.T) (*Miner, *crypto.PrivateKey) {
 		t.Fatalf("generate key: %v", err)
 	}
 
-	poa, err := consensus.NewPoA([][]byte{key.PublicKey()})
+	poa, err := consensus.NewPoA([][]byte{key.PublicKey()}, 3)
 	if err != nil {
 		t.Fatalf("create poa: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestMiner_ProduceBlock_ValidStructure(t *testing.T) {
 
 func TestMiner_ProduceBlock_ValidConsensus(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()})
+	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()}, 3)
 	poa.SetSigner(key)
 
 	addr := crypto.AddressFromPubKey(key.PublicKey())
@@ -191,7 +191,7 @@ func TestMiner_ProduceBlock_ValidConsensus(t *testing.T) {
 
 func TestMiner_ProduceBlock_WithMempool(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()})
+	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()}, 3)
 	poa.SetSigner(key)
 
 	addr := crypto.AddressFromPubKey(key.PublicKey())
@@ -230,7 +230,7 @@ func TestMiner_ProduceBlock_WithMempool(t *testing.T) {
 
 func TestMiner_ProduceBlock_SupplyCapReduced(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()})
+	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()}, 3)
 	poa.SetSigner(key)
 
 	addr := crypto.AddressFromPubKey(key.PublicKey())
@@ -254,7 +254,7 @@ func TestMiner_ProduceBlock_SupplyCapReduced(t *testing.T) {
 
 func TestMiner_ProduceBlock_SupplyCapZeroReward(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()})
+	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()}, 3)
 	poa.SetSigner(key)
 
 	addr := crypto.AddressFromPubKey(key.PublicKey())
@@ -276,7 +276,7 @@ func TestMiner_ProduceBlock_SupplyCapZeroReward(t *testing.T) {
 
 func TestMiner_ProduceBlock_SupplyCapWithFees(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()})
+	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()}, 3)
 	poa.SetSigner(key)
 
 	addr := crypto.AddressFromPubKey(key.PublicKey())
@@ -307,7 +307,7 @@ func TestMiner_ProduceBlock_SupplyCapWithFees(t *testing.T) {
 
 func TestMiner_ProduceBlock_UnlimitedSupply(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()})
+	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()}, 3)
 	poa.SetSigner(key)
 
 	addr := crypto.AddressFromPubKey(key.PublicKey())

@@ -87,7 +87,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 	utxoStore := utxo.NewStore(db)
 
 	validatorPubBytes, _ := hex.DecodeString(pubHex)
-	engine, err := consensus.NewPoA([][]byte{validatorPubBytes})
+	engine, err := consensus.NewPoA([][]byte{validatorPubBytes}, 3)
 	if err != nil {
 		t.Fatalf("create poa: %v", err)
 	}
@@ -600,7 +600,7 @@ func setupTestEnvWithConfig(t *testing.T, rpcCfg config.RPCConfig) *testEnv {
 	utxoStore := utxo.NewStore(db)
 
 	validatorPubBytes, _ := hex.DecodeString(pubHex)
-	engine, _ := consensus.NewPoA([][]byte{validatorPubBytes})
+	engine, _ := consensus.NewPoA([][]byte{validatorPubBytes}, 3)
 	engine.SetSigner(validatorKey)
 
 	ch, _ := chain.New(types.ChainID{}, db, utxoStore, engine)

@@ -1,7 +1,6 @@
 package chain
 
 import (
-	"bytes"
 	"testing"
 
 	"github.com/Klingon-tech/klingnet-chain/config"
@@ -25,7 +24,7 @@ func reorgTestChain(t *testing.T) (*Chain, *crypto.PrivateKey, types.Address, *u
 	}
 	addr := crypto.AddressFromPubKey(validatorKey.PublicKey())
 
-	poa, err := consensus.NewPoA([][]byte{validatorKey.PublicKey()})
+	poa, err := consensus.NewPoA([][]byte{validatorKey.PublicKey()}, 3)
 	if err != nil {
 		t.Fatalf("NewPoA: %v", err)
 	}
@@ -88,6 +87,9 @@ func buildCoinbaseBlock(t *testing.T, ch *Chain, prevHash types.Hash, height uin
 	blk := block.NewBlock(header, []*tx.Transaction{coinbase})
 
 	poa := ch.engine.(*consensus.PoA)
+	if err := poa.Prepare(blk.Header); err != nil {
+		t.Fatalf("Prepare block at height %d: %v", height, err)
+	}
 	if err := poa.Seal(blk); err != nil {
 		t.Fatalf("Seal block at height %d: %v", height, err)
 	}
@@ -130,20 +132,12 @@ func TestReorg_LongerForkWins(t *testing.T) {
 	if err := ch.ProcessBlock(blkB2); err != nil {
 		t.Fatalf("process B2: %v", err)
 	}
-	// B2 at height 2: tie-breaker picks whichever hash is lower.
+	// B2 at height 2 with same cumulative difficulty: keeps current chain (A2).
 	if ch.Height() != 2 {
 		t.Errorf("after B2: expected height 2, got %d", ch.Height())
 	}
-	a2Hash := blkA2.Hash()
-	b2Hash := blkB2.Hash()
-	if bytes.Compare(b2Hash[:], a2Hash[:]) < 0 {
-		if ch.TipHash() != b2Hash {
-			t.Errorf("after B2: tie-breaker should pick B2 (lower hash)")
-		}
-	} else {
-		if ch.TipHash() != a2Hash {
-			t.Errorf("after B2: tie-breaker should keep A2 (lower hash)")
-		}
+	if ch.TipHash() != blkA2.Hash() {
+		t.Errorf("after B2: equal difficulty should keep current chain (A2)")
 	}
 
 	// B3 at height 3 is longer, should trigger reorg.
@@ -159,7 +153,7 @@ func TestReorg_LongerForkWins(t *testing.T) {
 	}
 }
 
-func TestReorg_SameLengthTieBreaker(t *testing.T) {
+func TestReorg_SameDifficultyKeepsCurrent(t *testing.T) {
 	ch, _, addr, _ := reorgTestChain(t)
 
 	genesisHash := ch.TipHash()
@@ -169,8 +163,9 @@ func TestReorg_SameLengthTieBreaker(t *testing.T) {
 	if err := ch.ProcessBlock(blkA1); err != nil {
 		t.Fatalf("process A1: %v", err)
 	}
+	a1Hash := blkA1.Hash()
 
-	// Fork chain: B1 (same height).
+	// Fork chain: B1 (same height, same difficulty — single validator so both in-turn).
 	blkB1 := buildCoinbaseBlock(t, ch, genesisHash, 1, addr, 100)
 	if err := ch.ProcessBlock(blkB1); err != nil {
 		t.Fatalf("process B1: %v", err)
@@ -180,15 +175,10 @@ func TestReorg_SameLengthTieBreaker(t *testing.T) {
 		t.Errorf("expected height 1, got %d", ch.Height())
 	}
 
-	// PoA tie-breaker: whichever block hash is lower wins.
-	a1Hash := blkA1.Hash()
-	b1Hash := blkB1.Hash()
-	expectedTip := a1Hash
-	if bytes.Compare(b1Hash[:], a1Hash[:]) < 0 {
-		expectedTip = b1Hash
-	}
-	if ch.TipHash() != expectedTip {
-		t.Errorf("tie-breaker: expected tip %s, got %s", expectedTip, ch.TipHash())
+	// Equal cumulative difficulty → current chain kept (no reorg).
+	if ch.TipHash() != a1Hash {
+		t.Errorf("equal difficulty: expected tip %s (A1, first processed), got %s",
+			a1Hash, ch.TipHash())
 	}
 }
 
@@ -328,5 +318,136 @@ func TestReorg_TxIndexUpdated(t *testing.T) {
 	b2TxHash := blkB2.Transactions[0].Hash()
 	if _, err := ch.GetTransaction(b2TxHash); err != nil {
 		t.Errorf("B2 tx should be in index: %v", err)
+	}
+}
+
+func TestReorg_InTurnBeatsOutOfTurn(t *testing.T) {
+	// Two validators: key1 and key2. The chain uses time-slot election
+	// so we can craft timestamps where one is in-turn and the other is out-of-turn.
+	key1, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	key2, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	addr := crypto.AddressFromPubKey(key1.PublicKey())
+
+	poa, err := consensus.NewPoA([][]byte{key1.PublicKey(), key2.PublicKey()}, 3)
+	if err != nil {
+		t.Fatalf("NewPoA: %v", err)
+	}
+
+	db := storage.NewMemory()
+	utxoStore := utxo.NewStore(db)
+	ch, err := New(types.ChainID{}, db, utxoStore, poa)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	gen := &config.Genesis{
+		ChainID:   "reorg-inturn",
+		ChainName: "InTurn Test",
+		Timestamp: 1700000000,
+		Alloc:     map[string]uint64{addr.String(): 100_000},
+		Protocol: config.ProtocolConfig{
+			Consensus: config.ConsensusRules{
+				Type:        config.ConsensusPoA,
+				BlockTime:   3,
+				BlockReward: 2000,
+			},
+		},
+	}
+	if err := ch.InitFromGenesis(gen); err != nil {
+		t.Fatalf("InitFromGenesis: %v", err)
+	}
+
+	genesisHash := ch.TipHash()
+
+	// Find a timestamp where key2 is in-turn (slot validator = key2).
+	// blockTime=3, 2 validators: slot = (timestamp / 3) % 2.
+	// slot 0 → key1, slot 1 → key2.
+	// timestamp=3 → slot=(3/3)%2=1 → key2 is in-turn.
+	ts := uint64(1700000003)
+
+	// Build block A1 signed by key1 (out-of-turn, diff=1).
+	coinbaseA := &tx.Transaction{
+		Version: 1,
+		Inputs:  []tx.Input{{PrevOut: types.Outpoint{}}},
+		Outputs: []tx.Output{{
+			Value:  1000,
+			Script: types.Script{Type: types.ScriptTypeP2PKH, Data: addr[:]},
+		}},
+	}
+	merkleA := block.ComputeMerkleRoot([]types.Hash{coinbaseA.Hash()})
+	headerA := &block.Header{
+		Version:    block.CurrentVersion,
+		PrevHash:   genesisHash,
+		MerkleRoot: merkleA,
+		Timestamp:  ts,
+		Height:     1,
+	}
+	blkA := block.NewBlock(headerA, []*tx.Transaction{coinbaseA})
+
+	poa.SetSigner(key1) // key1 is out-of-turn at ts=1700000003
+	if err := poa.Prepare(blkA.Header); err != nil {
+		t.Fatalf("Prepare A: %v", err)
+	}
+	if blkA.Header.Difficulty != consensus.DiffNoTurn {
+		t.Fatalf("A difficulty = %d, want %d (out-of-turn)", blkA.Header.Difficulty, consensus.DiffNoTurn)
+	}
+	if err := poa.Seal(blkA); err != nil {
+		t.Fatalf("Seal A: %v", err)
+	}
+
+	if err := ch.ProcessBlock(blkA); err != nil {
+		t.Fatalf("process A: %v", err)
+	}
+	if ch.TipHash() != blkA.Hash() {
+		t.Fatalf("tip should be A after processing")
+	}
+
+	// Build block B1 signed by key2 (in-turn, diff=2) at the same height.
+	coinbaseB := &tx.Transaction{
+		Version: 1,
+		Inputs:  []tx.Input{{PrevOut: types.Outpoint{}}},
+		Outputs: []tx.Output{{
+			Value:  1001, // Different value to get different tx hash.
+			Script: types.Script{Type: types.ScriptTypeP2PKH, Data: addr[:]},
+		}},
+	}
+	merkleB := block.ComputeMerkleRoot([]types.Hash{coinbaseB.Hash()})
+	headerB := &block.Header{
+		Version:    block.CurrentVersion,
+		PrevHash:   genesisHash,
+		MerkleRoot: merkleB,
+		Timestamp:  ts,
+		Height:     1,
+	}
+	blkB := block.NewBlock(headerB, []*tx.Transaction{coinbaseB})
+
+	poa.SetSigner(key2) // key2 is in-turn at ts=1700000003
+	if err := poa.Prepare(blkB.Header); err != nil {
+		t.Fatalf("Prepare B: %v", err)
+	}
+	if blkB.Header.Difficulty != consensus.DiffInTurn {
+		t.Fatalf("B difficulty = %d, want %d (in-turn)", blkB.Header.Difficulty, consensus.DiffInTurn)
+	}
+	if err := poa.Seal(blkB); err != nil {
+		t.Fatalf("Seal B: %v", err)
+	}
+
+	// Process B — should trigger reorg because cumulative difficulty 2 > 1.
+	if err := ch.ProcessBlock(blkB); err != nil {
+		t.Fatalf("process B: %v", err)
+	}
+
+	if ch.TipHash() != blkB.Hash() {
+		t.Errorf("in-turn block (diff=2) should beat out-of-turn (diff=1): tip=%s, want=%s",
+			ch.TipHash(), blkB.Hash())
+	}
+	if ch.Height() != 1 {
+		t.Errorf("height = %d, want 1", ch.Height())
 	}
 }

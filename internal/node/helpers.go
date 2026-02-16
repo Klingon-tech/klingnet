@@ -72,7 +72,7 @@ func createEngine(genesis *config.Genesis) (consensus.Engine, error) {
 			validators[i] = b
 		}
 
-		poa, err := consensus.NewPoA(validators)
+		poa, err := consensus.NewPoA(validators, genesis.Protocol.Consensus.BlockTime)
 		if err != nil {
 			return nil, fmt.Errorf("create poa: %w", err)
 		}

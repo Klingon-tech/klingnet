@@ -141,7 +141,7 @@ func buildEngine(reg *RegistrationData) (consensus.Engine, error) {
 			}
 			validators[i] = b
 		}
-		return consensus.NewPoA(validators)
+		return consensus.NewPoA(validators, reg.BlockTime)
 
 	case config.ConsensusPoW:
 		return consensus.NewPoW(reg.InitialDifficulty, reg.DifficultyAdjust, reg.BlockTime)

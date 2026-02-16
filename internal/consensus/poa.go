@@ -6,10 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Klingon-tech/klingnet-chain/pkg/block"
 	"github.com/Klingon-tech/klingnet-chain/pkg/crypto"
 	"github.com/Klingon-tech/klingnet-chain/pkg/types"
+)
+
+// Weighted difficulty constants (Clique-style).
+// In-turn blocks get higher difficulty so they always win fork choice.
+const (
+	DiffInTurn  uint64 = 2
+	DiffNoTurn  uint64 = 1
 )
 
 // PoA errors.
@@ -19,10 +27,13 @@ var (
 	ErrMissingSig        = errors.New("block missing validator signature")
 	ErrInvalidSig        = errors.New("invalid validator signature")
 	ErrInsufficientStake = errors.New("validator has insufficient stake")
+	ErrBadPoADifficulty  = errors.New("incorrect PoA difficulty")
+	ErrInvalidBlockTime  = errors.New("blockTime must be > 0")
 )
 
 // PoA implements proof-of-authority consensus.
-// Authorized validators take turns signing blocks.
+// Authorized validators take turns signing blocks using time-slot-based
+// election (Aura-style) and weighted difficulty (Clique-style).
 type PoA struct {
 	mu sync.RWMutex
 
@@ -32,6 +43,10 @@ type PoA struct {
 	// genesisValidators is the original set from genesis (always trusted, no staking needed).
 	genesisValidators [][]byte
 
+	// blockTime is the target seconds between blocks. Used for time-slot election:
+	// validator = validators[timestamp / blockTime % N].
+	blockTime int
+
 	// signer is the local validator's private key (nil if this node is not a validator).
 	signer *crypto.PrivateKey
 
@@ -40,11 +55,16 @@ type PoA struct {
 	stakeChecker StakeChecker
 }
 
-// NewPoA creates a new PoA engine with the given validator public keys.
+// NewPoA creates a new PoA engine with the given validator public keys and
+// block time (seconds). The blockTime is used for time-slot-based validator
+// election: validator = validators[timestamp / blockTime % N].
 // These validators are treated as genesis validators (always trusted).
-func NewPoA(validators [][]byte) (*PoA, error) {
+func NewPoA(validators [][]byte, blockTime int) (*PoA, error) {
 	if len(validators) == 0 {
 		return nil, ErrNoValidators
+	}
+	if blockTime <= 0 {
+		return nil, ErrInvalidBlockTime
 	}
 	// Copy genesis validators so the original set is preserved.
 	genesis := make([][]byte, len(validators))
@@ -52,6 +72,7 @@ func NewPoA(validators [][]byte) (*PoA, error) {
 	return &PoA{
 		Validators:        validators,
 		genesisValidators: genesis,
+		blockTime:         blockTime,
 	}, nil
 }
 
@@ -82,21 +103,21 @@ func (p *PoA) SetStakeChecker(sc StakeChecker) {
 	p.stakeChecker = sc
 }
 
-// VerifyHeader checks that the block header has a valid validator signature.
+// VerifyHeader checks that the block header has a valid validator signature
+// and correct weighted difficulty.
+//
+// Difficulty rules (Clique-style):
+//   - In-turn signer (matches time slot) → header.Difficulty must be DiffInTurn (2)
+//   - Out-of-turn signer (backup)        → header.Difficulty must be DiffNoTurn (1)
+//
 // For non-genesis validators, it also verifies on-chain stake if a StakeChecker
 // is configured.
-//
-// Design note: VerifyHeader accepts a signature from ANY authorized validator,
-// regardless of whose "turn" it is (per SelectValidator). Turn order is only
-// used as a soft hint by the miner — non-selected validators wait a grace
-// period before producing. This intentionally favors liveness over strict
-// rotation: if the selected validator goes offline, others can still produce
-// blocks without the chain halting.
 func (p *PoA) VerifyHeader(header *block.Header) error {
 	p.mu.RLock()
 	validators := append([][]byte(nil), p.Validators...)
 	genesisValidators := append([][]byte(nil), p.genesisValidators...)
 	stakeChecker := p.stakeChecker
+	blockTime := p.blockTime
 	p.mu.RUnlock()
 
 	if len(header.ValidatorSig) == 0 {
@@ -118,6 +139,18 @@ func (p *PoA) VerifyHeader(header *block.Header) error {
 					return ErrInsufficientStake
 				}
 			}
+
+			// Verify weighted difficulty matches signer's slot position.
+			inTurn := slotValidatorFromSet(validators, header.Timestamp, blockTime)
+			expectedDiff := DiffNoTurn
+			if bytes.Equal(pub, inTurn) {
+				expectedDiff = DiffInTurn
+			}
+			if header.Difficulty != expectedDiff {
+				return fmt.Errorf("%w: signer expects %d, got %d",
+					ErrBadPoADifficulty, expectedDiff, header.Difficulty)
+			}
+
 			return nil
 		}
 	}
@@ -125,8 +158,25 @@ func (p *PoA) VerifyHeader(header *block.Header) error {
 	return ErrInvalidSig
 }
 
-// Prepare is a no-op for PoA — the header is ready for signing as-is.
+// Prepare sets the header's weighted difficulty based on time-slot election.
+// Must be called before Seal so the difficulty is included in the signed hash.
 func (p *PoA) Prepare(header *block.Header) error {
+	p.mu.RLock()
+	validators := append([][]byte(nil), p.Validators...)
+	blockTime := p.blockTime
+	signer := p.signer
+	p.mu.RUnlock()
+
+	if signer == nil {
+		return fmt.Errorf("no signer configured")
+	}
+
+	inTurn := slotValidatorFromSet(validators, header.Timestamp, blockTime)
+	if bytes.Equal(signer.PublicKey(), inTurn) {
+		header.Difficulty = DiffInTurn
+	} else {
+		header.Difficulty = DiffNoTurn
+	}
 	return nil
 }
 
@@ -200,9 +250,88 @@ func (p *PoA) RemoveValidator(pubKey []byte) {
 	}
 }
 
-// SelectValidator returns the deterministically random validator for the given
-// block height and previous block hash. Uses BLAKE3(prevHash || height) as
-// entropy to derive a pseudo-random index into the validator set.
+// SlotValidator returns the in-turn validator for the given Unix timestamp.
+// Uses Aura-style time-slot election: validator = validators[timestamp / blockTime % N].
+// Selection depends only on wall clock, NOT chain tip — two nodes with synced
+// clocks always agree on who's in-turn, regardless of their chain state.
+func (p *PoA) SlotValidator(timestamp uint64) []byte {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return slotValidatorFromSet(p.Validators, timestamp, p.blockTime)
+}
+
+// slotValidatorFromSet returns the in-turn validator for the given timestamp.
+func slotValidatorFromSet(validators [][]byte, timestamp uint64, blockTime int) []byte {
+	if len(validators) == 0 {
+		return nil
+	}
+	if len(validators) == 1 {
+		return validators[0]
+	}
+	idx := (timestamp / uint64(blockTime)) % uint64(len(validators))
+	return validators[idx]
+}
+
+// IsInTurn returns true if the local signer is the in-turn validator for the
+// given Unix timestamp.
+func (p *PoA) IsInTurn(timestamp uint64) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.signer == nil {
+		return false
+	}
+	inTurn := slotValidatorFromSet(p.Validators, timestamp, p.blockTime)
+	return bytes.Equal(inTurn, p.signer.PublicKey())
+}
+
+// ValidatorCount returns the number of authorized validators.
+func (p *PoA) ValidatorCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.Validators)
+}
+
+// BackupDelay returns the staggered delay for out-of-turn block production.
+// The delay is proportional to the signer's distance from the in-turn slot,
+// so backup validators produce in a deterministic order.
+// Returns 0 if the signer is in-turn or not configured.
+func (p *PoA) BackupDelay(timestamp uint64) time.Duration {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.signer == nil || len(p.Validators) <= 1 {
+		return 0
+	}
+
+	n := uint64(len(p.Validators))
+	slot := (timestamp / uint64(p.blockTime)) % n
+
+	// Find signer's index.
+	signerIdx := int64(-1)
+	pub := p.signer.PublicKey()
+	for i, v := range p.Validators {
+		if bytes.Equal(v, pub) {
+			signerIdx = int64(i)
+			break
+		}
+	}
+	if signerIdx < 0 {
+		return 0
+	}
+
+	// Distance from in-turn slot (circular).
+	dist := (uint64(signerIdx) - slot + n) % n
+	if dist == 0 {
+		return 0 // In-turn — no delay.
+	}
+
+	// Each distance step adds blockTime/N seconds of delay.
+	delayMs := dist * uint64(p.blockTime) * 1000 / n
+	return time.Duration(delayMs) * time.Millisecond
+}
+
+// Deprecated: SelectValidator uses tip-dependent selection. Use SlotValidator instead.
 func (p *PoA) SelectValidator(height uint64, prevHash types.Hash) []byte {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -246,8 +375,7 @@ func (p *PoA) IdentifySigner(header *block.Header) []byte {
 	return nil
 }
 
-// IsSelected returns true if the local signer is the selected validator
-// for the given block height and previous block hash.
+// Deprecated: IsSelected uses tip-dependent selection. Use IsInTurn instead.
 func (p *PoA) IsSelected(height uint64, prevHash types.Hash) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

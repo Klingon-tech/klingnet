@@ -53,6 +53,7 @@ func TestProcessBlock_RejectsForgedSpendInBlock(t *testing.T) {
 	}, []*tx.Transaction{coinbase, forgedTx})
 
 	poa := ch.engine.(*consensus.PoA)
+	poa.Prepare(blk.Header)
 	if err := poa.Seal(blk); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -86,6 +87,7 @@ func TestProcessBlock_RejectsCoinbaseRewardAboveConfiguredSubsidy(t *testing.T) 
 	}, []*tx.Transaction{coinbase})
 
 	poa := ch.engine.(*consensus.PoA)
+	poa.Prepare(blk.Header)
 	if err := poa.Seal(blk); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -127,6 +129,7 @@ func TestProcessBlock_RejectsMalformedCoinbaseTx(t *testing.T) {
 	}, []*tx.Transaction{coinbase})
 
 	poa := ch.engine.(*consensus.PoA)
+	poa.Prepare(blk.Header)
 	if err := poa.Seal(blk); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -164,6 +167,7 @@ func TestProcessBlock_RejectsForkBlockWithInvalidHeightForParent(t *testing.T) {
 	}, []*tx.Transaction{coinbase})
 
 	poa := ch.engine.(*consensus.PoA)
+	poa.Prepare(blk.Header)
 	if err := poa.Seal(blk); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}

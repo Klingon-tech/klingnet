@@ -30,7 +30,7 @@ func setupStakeTest(t *testing.T, minStake uint64) *stakeTestEnv {
 	utxoStore := utxo.NewStore(db)
 	checker := NewUTXOStakeChecker(utxoStore, minStake)
 
-	poa, err := NewPoA([][]byte{genesisKey.PublicKey()})
+	poa, err := NewPoA([][]byte{genesisKey.PublicKey()}, 3)
 	if err != nil {
 		t.Fatalf("NewPoA: %v", err)
 	}
@@ -70,6 +70,7 @@ func TestStake_GenesisValidatorExempt(t *testing.T) {
 
 	// Genesis validator should pass VerifyHeader without any stake.
 	blk := testBlock(t)
+	env.poa.Prepare(blk.Header)
 	if err := env.poa.Seal(blk); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -92,6 +93,7 @@ func TestStake_NonGenesisWithStake(t *testing.T) {
 	// Set signer to new validator and seal a block.
 	env.poa.SetSigner(newKey)
 	blk := testBlock(t)
+	env.poa.Prepare(blk.Header)
 	if err := env.poa.Seal(blk); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -112,6 +114,7 @@ func TestStake_NonGenesisWithoutStake(t *testing.T) {
 	// Set signer to new validator and seal a block.
 	env.poa.SetSigner(newKey)
 	blk := testBlock(t)
+	env.poa.Prepare(blk.Header)
 	if err := env.poa.Seal(blk); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -134,6 +137,7 @@ func TestStake_InsufficientStake(t *testing.T) {
 
 	env.poa.SetSigner(newKey)
 	blk := testBlock(t)
+	env.poa.Prepare(blk.Header)
 	env.poa.Seal(blk)
 
 	err := env.poa.VerifyHeader(blk.Header)
@@ -155,6 +159,7 @@ func TestStake_MultipleUTXOsSumToEnough(t *testing.T) {
 
 	env.poa.SetSigner(newKey)
 	blk := testBlock(t)
+	env.poa.Prepare(blk.Header)
 	env.poa.Seal(blk)
 
 	if err := env.poa.VerifyHeader(blk.Header); err != nil {
@@ -165,7 +170,7 @@ func TestStake_MultipleUTXOsSumToEnough(t *testing.T) {
 func TestStake_NoCheckerMeansNoStakeRequired(t *testing.T) {
 	// Create PoA without a stake checker (backward compat).
 	key, _ := crypto.GenerateKey()
-	poa, _ := NewPoA([][]byte{key.PublicKey()})
+	poa, _ := NewPoA([][]byte{key.PublicKey()}, 3)
 
 	// Add non-genesis validator.
 	newKey, _ := crypto.GenerateKey()
@@ -173,6 +178,7 @@ func TestStake_NoCheckerMeansNoStakeRequired(t *testing.T) {
 	poa.SetSigner(newKey)
 
 	blk := testBlock(t)
+	poa.Prepare(blk.Header)
 	poa.Seal(blk)
 
 	// Should pass without stake checker.

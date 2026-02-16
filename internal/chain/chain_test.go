@@ -59,7 +59,7 @@ func testChain(t *testing.T) (*Chain, *crypto.PrivateKey, *config.Genesis) {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 
-	poa, err := consensus.NewPoA([][]byte{validatorKey.PublicKey()})
+	poa, err := consensus.NewPoA([][]byte{validatorKey.PublicKey()}, 3)
 	if err != nil {
 		t.Fatalf("NewPoA: %v", err)
 	}
@@ -140,6 +140,9 @@ func buildSignedBlock(t *testing.T, ch *Chain, key *crypto.PrivateKey, _ *crypto
 
 	// Seal with validator.
 	poa := ch.engine.(*consensus.PoA)
+	if err := poa.Prepare(blk.Header); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
 	if err := poa.Seal(blk); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -480,7 +483,7 @@ func TestChain_GetTransaction_NotFound(t *testing.T) {
 
 func TestChain_New(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()})
+	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()}, 3)
 	db := storage.NewMemory()
 	utxoStore := utxo.NewStore(db)
 
@@ -498,7 +501,7 @@ func TestChain_New(t *testing.T) {
 
 func TestChain_New_NilDB(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()})
+	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()}, 3)
 	utxoStore := utxo.NewStore(storage.NewMemory())
 
 	_, err := New(types.ChainID{}, nil, utxoStore, poa)
@@ -509,7 +512,7 @@ func TestChain_New_NilDB(t *testing.T) {
 
 func TestChain_New_NilUTXOSet(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()})
+	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()}, 3)
 	db := storage.NewMemory()
 
 	_, err := New(types.ChainID{}, db, nil, poa)
@@ -647,6 +650,7 @@ func TestChain_ProcessBlock_BadPrevHash(t *testing.T) {
 	blk := block.NewBlock(header, txs)
 
 	poa := ch.engine.(*consensus.PoA)
+	poa.Prepare(blk.Header)
 	poa.Seal(blk)
 
 	err := ch.ProcessBlock(blk)
@@ -675,6 +679,7 @@ func TestChain_ProcessBlock_BadHeight(t *testing.T) {
 	blk := block.NewBlock(header, txs)
 
 	poa := ch.engine.(*consensus.PoA)
+	poa.Prepare(blk.Header)
 	poa.Seal(blk)
 
 	err := ch.ProcessBlock(blk)
@@ -895,6 +900,9 @@ func buildCustomBlock(t *testing.T, ch *Chain, txs []*tx.Transaction) *block.Blo
 	}
 	blk := block.NewBlock(header, txs)
 	poa := ch.engine.(*consensus.PoA)
+	if err := poa.Prepare(blk.Header); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
 	if err := poa.Seal(blk); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -1099,7 +1107,7 @@ func makeTestBlock(t *testing.T, height uint64, prevHash types.Hash) *block.Bloc
 func TestProcessBlock_SupplyCapEnforced(t *testing.T) {
 	// Create a genesis with maxSupply = 7000, alloc = 5000, blockReward = 1000.
 	validatorKey, _ := crypto.GenerateKey()
-	poa, _ := consensus.NewPoA([][]byte{validatorKey.PublicKey()})
+	poa, _ := consensus.NewPoA([][]byte{validatorKey.PublicKey()}, 3)
 	poa.SetSigner(validatorKey)
 
 	db := storage.NewMemory()
@@ -1188,6 +1196,7 @@ func TestProcessBlock_FutureTimestamp(t *testing.T) {
 	}
 	blk := block.NewBlock(header, txs)
 	poa := ch.engine.(*consensus.PoA)
+	poa.Prepare(blk.Header)
 	poa.Seal(blk)
 
 	err := ch.ProcessBlock(blk)
@@ -1201,7 +1210,7 @@ func TestProcessBlock_FutureTimestamp(t *testing.T) {
 func TestProcessBlock_WrongStakeAmount(t *testing.T) {
 	// Create chain with validatorStake = 900.
 	validatorKey, _ := crypto.GenerateKey()
-	poa, _ := consensus.NewPoA([][]byte{validatorKey.PublicKey()})
+	poa, _ := consensus.NewPoA([][]byte{validatorKey.PublicKey()}, 3)
 	poa.SetSigner(validatorKey)
 
 	db := storage.NewMemory()

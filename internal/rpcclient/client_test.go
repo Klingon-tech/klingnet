@@ -75,7 +75,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 	utxoStore := utxo.NewStore(db)
 
 	validatorPubBytes, _ := hex.DecodeString(pubHex)
-	engine, err := consensus.NewPoA([][]byte{validatorPubBytes})
+	engine, err := consensus.NewPoA([][]byte{validatorPubBytes}, 3)
 	if err != nil {
 		t.Fatalf("create poa: %v", err)
 	}

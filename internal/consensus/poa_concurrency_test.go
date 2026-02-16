@@ -12,7 +12,7 @@ func TestPoA_ConcurrentValidatorSetAccess(t *testing.T) {
 	key1, _ := crypto.GenerateKey()
 	key2, _ := crypto.GenerateKey()
 
-	poa, err := NewPoA([][]byte{key1.PublicKey()})
+	poa, err := NewPoA([][]byte{key1.PublicKey()}, 3)
 	if err != nil {
 		t.Fatalf("NewPoA: %v", err)
 	}
@@ -21,6 +21,7 @@ func TestPoA_ConcurrentValidatorSetAccess(t *testing.T) {
 	}
 
 	blk := testBlock(t)
+	poa.Prepare(blk.Header)
 	if err := poa.Seal(blk); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Klingon-tech/klingnet-chain/pkg/block"
 	"github.com/Klingon-tech/klingnet-chain/pkg/crypto"
@@ -17,7 +18,7 @@ func testValidator(t *testing.T) (*crypto.PrivateKey, *PoA) {
 	if err != nil {
 		t.Fatalf("GenerateKey() error: %v", err)
 	}
-	poa, err := NewPoA([][]byte{key.PublicKey()})
+	poa, err := NewPoA([][]byte{key.PublicKey()}, 3)
 	if err != nil {
 		t.Fatalf("NewPoA() error: %v", err)
 	}
@@ -49,7 +50,7 @@ func testBlock(t *testing.T) *block.Block {
 
 func TestNewPoA(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	poa, err := NewPoA([][]byte{key.PublicKey()})
+	poa, err := NewPoA([][]byte{key.PublicKey()}, 3)
 	if err != nil {
 		t.Fatalf("NewPoA() error: %v", err)
 	}
@@ -59,7 +60,7 @@ func TestNewPoA(t *testing.T) {
 }
 
 func TestNewPoA_NoValidators(t *testing.T) {
-	_, err := NewPoA(nil)
+	_, err := NewPoA(nil, 3)
 	if !errors.Is(err, ErrNoValidators) {
 		t.Errorf("expected ErrNoValidators, got: %v", err)
 	}
@@ -89,6 +90,7 @@ func TestPoA_SealAndVerify(t *testing.T) {
 
 	blk := testBlock(t)
 
+	poa.Prepare(blk.Header)
 	err := poa.Seal(blk)
 	if err != nil {
 		t.Fatalf("Seal() error: %v", err)
@@ -140,7 +142,7 @@ func TestPoA_VerifyHeader_WrongValidator(t *testing.T) {
 	key2, _ := crypto.GenerateKey()
 
 	// PoA only trusts key1.
-	poa, _ := NewPoA([][]byte{key1.PublicKey()})
+	poa, _ := NewPoA([][]byte{key1.PublicKey()}, 3)
 
 	blk := testBlock(t)
 	// Sign with key2 (not a validator).
@@ -158,7 +160,7 @@ func TestPoA_MultipleValidators(t *testing.T) {
 	key1, _ := crypto.GenerateKey()
 	key2, _ := crypto.GenerateKey()
 
-	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey()})
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey()}, 3)
 
 	// Both should be accepted as signers.
 	if err := poa.SetSigner(key1); err != nil {
@@ -171,6 +173,7 @@ func TestPoA_MultipleValidators(t *testing.T) {
 	// Seal with key2 and verify.
 	poa.SetSigner(key2)
 	blk := testBlock(t)
+	poa.Prepare(blk.Header)
 	poa.Seal(blk)
 
 	if err := poa.VerifyHeader(blk.Header); err != nil {
@@ -180,10 +183,11 @@ func TestPoA_MultipleValidators(t *testing.T) {
 
 func TestPoA_Seal_NoSigner(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	poa, _ := NewPoA([][]byte{key.PublicKey()})
+	poa, _ := NewPoA([][]byte{key.PublicKey()}, 3)
 	// Don't set signer.
 
 	blk := testBlock(t)
+	poa.Prepare(blk.Header)
 	err := poa.Seal(blk)
 	if err == nil {
 		t.Error("Seal() without signer should fail")
@@ -199,6 +203,7 @@ func TestValidator_ValidateBlock(t *testing.T) {
 	poa.SetSigner(key)
 
 	blk := testBlock(t)
+	poa.Prepare(blk.Header)
 	poa.Seal(blk)
 
 	v := NewValidator(poa)
@@ -214,6 +219,7 @@ func TestValidator_ValidateBlock_BadStructure(t *testing.T) {
 	// Block with wrong merkle root.
 	blk := testBlock(t)
 	blk.Header.MerkleRoot = types.Hash{0xde, 0xad}
+	poa.Prepare(blk.Header)
 	poa.Seal(blk)
 
 	v := NewValidator(poa)
@@ -241,7 +247,7 @@ func TestPoA_SelectValidator_Deterministic(t *testing.T) {
 	key2, _ := crypto.GenerateKey()
 	key3, _ := crypto.GenerateKey()
 
-	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey(), key3.PublicKey()})
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey(), key3.PublicKey()}, 3)
 
 	prevHash := types.Hash{0x01, 0x02, 0x03}
 	height := uint64(42)
@@ -263,7 +269,7 @@ func TestPoA_SelectValidator_DifferentInputs(t *testing.T) {
 	key2, _ := crypto.GenerateKey()
 	key3, _ := crypto.GenerateKey()
 
-	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey(), key3.PublicKey()})
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey(), key3.PublicKey()}, 3)
 
 	prevHash := types.Hash{0x01, 0x02, 0x03}
 
@@ -300,7 +306,7 @@ func TestPoA_IsSelected(t *testing.T) {
 	key1, _ := crypto.GenerateKey()
 	key2, _ := crypto.GenerateKey()
 
-	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey()})
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey()}, 3)
 	poa.SetSigner(key1)
 
 	// Find a height where key1 is selected and one where it isn't.
@@ -343,7 +349,7 @@ func TestPoA_IsSelected(t *testing.T) {
 
 func TestPoA_IsSelected_NoSigner(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	poa, _ := NewPoA([][]byte{key.PublicKey()})
+	poa, _ := NewPoA([][]byte{key.PublicKey()}, 3)
 	// Don't set signer.
 
 	if poa.IsSelected(1, types.Hash{}) {
@@ -355,11 +361,12 @@ func TestPoA_IdentifySigner(t *testing.T) {
 	key1, _ := crypto.GenerateKey()
 	key2, _ := crypto.GenerateKey()
 
-	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey()})
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey()}, 3)
 
 	// Seal with key2.
 	poa.SetSigner(key2)
 	blk := testBlock(t)
+	poa.Prepare(blk.Header)
 	poa.Seal(blk)
 
 	signer := poa.IdentifySigner(blk.Header)
@@ -374,7 +381,7 @@ func TestPoA_IdentifySigner(t *testing.T) {
 
 func TestPoA_IdentifySigner_NoSig(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	poa, _ := NewPoA([][]byte{key.PublicKey()})
+	poa, _ := NewPoA([][]byte{key.PublicKey()}, 3)
 
 	blk := testBlock(t)
 	// Don't seal — no signature.
@@ -389,7 +396,7 @@ func TestPoA_IdentifySigner_UnknownSigner(t *testing.T) {
 	key2, _ := crypto.GenerateKey()
 
 	// PoA only knows key1.
-	poa, _ := NewPoA([][]byte{key1.PublicKey()})
+	poa, _ := NewPoA([][]byte{key1.PublicKey()}, 3)
 
 	blk := testBlock(t)
 	// Sign with key2 (not in validator set).
@@ -447,5 +454,223 @@ func TestPoA_RemoveValidator_Genesis(t *testing.T) {
 	// Verify the genesis validator is still present
 	if !bytes.Equal(poa.Validators[0], key.PublicKey()) {
 		t.Error("genesis validator should still be present")
+	}
+}
+
+// --- Time-slot election + weighted difficulty tests ---
+
+func TestPoA_NewPoA_InvalidBlockTime(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+	_, err := NewPoA([][]byte{key.PublicKey()}, 0)
+	if !errors.Is(err, ErrInvalidBlockTime) {
+		t.Errorf("expected ErrInvalidBlockTime for blockTime=0, got: %v", err)
+	}
+	_, err = NewPoA([][]byte{key.PublicKey()}, -1)
+	if !errors.Is(err, ErrInvalidBlockTime) {
+		t.Errorf("expected ErrInvalidBlockTime for blockTime=-1, got: %v", err)
+	}
+}
+
+func TestPoA_SlotValidator_Deterministic(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+	key3, _ := crypto.GenerateKey()
+
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey(), key3.PublicKey()}, 3)
+
+	ts := uint64(1700000000)
+	v1 := poa.SlotValidator(ts)
+	v2 := poa.SlotValidator(ts)
+
+	if v1 == nil {
+		t.Fatal("SlotValidator returned nil")
+	}
+	if !bytes.Equal(v1, v2) {
+		t.Error("SlotValidator is not deterministic: different results for same timestamp")
+	}
+}
+
+func TestPoA_SlotValidator_RoundRobin(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+	key3, _ := crypto.GenerateKey()
+
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey(), key3.PublicKey()}, 3)
+
+	// With blockTime=3 and 3 validators, consecutive 3-second slots should cycle
+	// through all validators: slot = (ts / 3) % 3.
+	seen := make(map[string]bool)
+	for i := uint64(0); i < 3; i++ {
+		ts := 1700000000 + i*3 // Timestamps 0, 3, 6 seconds apart.
+		v := poa.SlotValidator(ts)
+		seen[string(v)] = true
+	}
+	if len(seen) != 3 {
+		t.Errorf("expected 3 distinct validators in round-robin, got %d", len(seen))
+	}
+}
+
+func TestPoA_IsInTurn(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey()}, 3)
+	poa.SetSigner(key1)
+
+	// blockTime=3, 2 validators: slot = (ts / 3) % 2.
+	// Find timestamps where key1 is in-turn and out-of-turn.
+	foundInTurn, foundOutOfTurn := false, false
+	for i := uint64(0); i < 10; i++ {
+		ts := 1700000000 + i*3
+		if poa.IsInTurn(ts) {
+			foundInTurn = true
+		} else {
+			foundOutOfTurn = true
+		}
+		if foundInTurn && foundOutOfTurn {
+			break
+		}
+	}
+
+	if !foundInTurn {
+		t.Error("key1 was never in-turn")
+	}
+	if !foundOutOfTurn {
+		t.Error("key1 was always in-turn (expected some out-of-turn)")
+	}
+}
+
+func TestPoA_IsInTurn_NoSigner(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+	poa, _ := NewPoA([][]byte{key.PublicKey()}, 3)
+	// No signer set.
+
+	if poa.IsInTurn(1700000000) {
+		t.Error("IsInTurn should return false when no signer is set")
+	}
+}
+
+func TestPoA_BackupDelay_InTurn(t *testing.T) {
+	key, poa := testValidator(t) // Single validator.
+	poa.SetSigner(key)
+
+	// Single validator is always in-turn → delay should be 0.
+	delay := poa.BackupDelay(1700000000)
+	if delay != 0 {
+		t.Errorf("in-turn delay = %v, want 0", delay)
+	}
+}
+
+func TestPoA_BackupDelay_Distances(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+	key3, _ := crypto.GenerateKey()
+
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey(), key3.PublicKey()}, 3)
+
+	// blockTime=3, 3 validators. slot=(ts/3)%3.
+	// ts=1700000000: slot=(1700000000/3)%3. Let's find which is in-turn.
+	ts := uint64(1700000000)
+	inTurn := poa.SlotValidator(ts)
+
+	// Set signer to the in-turn validator — should get 0 delay.
+	for _, k := range []*crypto.PrivateKey{key1, key2, key3} {
+		if bytes.Equal(k.PublicKey(), inTurn) {
+			poa.SetSigner(k)
+			break
+		}
+	}
+	delay := poa.BackupDelay(ts)
+	if delay != 0 {
+		t.Errorf("in-turn validator delay = %v, want 0", delay)
+	}
+
+	// Set signer to a different validator — should get non-zero delay.
+	for _, k := range []*crypto.PrivateKey{key1, key2, key3} {
+		if !bytes.Equal(k.PublicKey(), inTurn) {
+			poa.SetSigner(k)
+			delay = poa.BackupDelay(ts)
+			if delay <= 0 {
+				t.Errorf("out-of-turn validator delay = %v, want > 0", delay)
+			}
+			// Delay should be at most blockTime.
+			if delay > time.Duration(3)*time.Second {
+				t.Errorf("delay %v exceeds blockTime", delay)
+			}
+			break
+		}
+	}
+}
+
+func TestPoA_ValidatorCount(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey()}, 3)
+	if poa.ValidatorCount() != 2 {
+		t.Errorf("ValidatorCount() = %d, want 2", poa.ValidatorCount())
+	}
+}
+
+func TestPoA_Prepare_SetsInTurnDifficulty(t *testing.T) {
+	key, poa := testValidator(t) // Single validator — always in-turn.
+	poa.SetSigner(key)
+
+	blk := testBlock(t)
+	if err := poa.Prepare(blk.Header); err != nil {
+		t.Fatalf("Prepare() error: %v", err)
+	}
+	if blk.Header.Difficulty != DiffInTurn {
+		t.Errorf("Difficulty = %d, want %d (DiffInTurn)", blk.Header.Difficulty, DiffInTurn)
+	}
+}
+
+func TestPoA_Prepare_SetsOutOfTurnDifficulty(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey()}, 3)
+
+	// Find a timestamp where key1 is out-of-turn.
+	// slot = (ts / 3) % 2. We try timestamps until key1 is NOT in-turn.
+	poa.SetSigner(key1)
+	var outOfTurnTS uint64
+	for i := uint64(0); i < 10; i++ {
+		ts := 1700000000 + i*3
+		if !poa.IsInTurn(ts) {
+			outOfTurnTS = ts
+			break
+		}
+	}
+	if outOfTurnTS == 0 {
+		t.Fatal("could not find out-of-turn timestamp for key1")
+	}
+
+	blk := testBlock(t)
+	blk.Header.Timestamp = outOfTurnTS
+	if err := poa.Prepare(blk.Header); err != nil {
+		t.Fatalf("Prepare() error: %v", err)
+	}
+	if blk.Header.Difficulty != DiffNoTurn {
+		t.Errorf("Difficulty = %d, want %d (DiffNoTurn)", blk.Header.Difficulty, DiffNoTurn)
+	}
+}
+
+func TestPoA_VerifyHeader_RejectsBadDifficulty(t *testing.T) {
+	key, poa := testValidator(t) // Single validator — always in-turn (expects DiffInTurn=2).
+	poa.SetSigner(key)
+
+	blk := testBlock(t)
+	poa.Prepare(blk.Header)
+	poa.Seal(blk)
+
+	// Tamper: set difficulty to DiffNoTurn (wrong for in-turn signer).
+	blk.Header.Difficulty = DiffNoTurn
+	// Re-seal because the hash changed.
+	poa.Seal(blk)
+
+	err := poa.VerifyHeader(blk.Header)
+	if !errors.Is(err, ErrBadPoADifficulty) {
+		t.Errorf("expected ErrBadPoADifficulty, got: %v", err)
 	}
 }
