@@ -837,99 +837,111 @@ func (n *Node) resolveFork(peerID peer.ID, failedHeight, peerTip uint64) {
 // ── Mining ──────────────────────────────────────────────────────────
 
 func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
-	ticker := time.NewTicker(blockTime)
-	defer ticker.Stop()
+	blockTimeSec := int64(blockTime / time.Second)
+	if blockTimeSec < 1 {
+		blockTimeSec = 1
+	}
 
 	for {
+		// Align to next slot boundary: (now/blockTime + 1) * blockTime.
+		// All nodes with synced clocks wake at the same instant.
+		nowUnix := time.Now().Unix()
+		nextSlot := ((nowUnix / blockTimeSec) + 1) * blockTimeSec
+		sleepDur := time.Until(time.Unix(nextSlot, 0))
+		if sleepDur < 0 {
+			sleepDur = 0
+		}
+
 		select {
 		case <-n.ctx.Done():
 			n.logger.Info().Msg("Block production stopped")
 			return
-		case <-ticker.C:
-			nextHeight := n.ch.Height() + 1
-			now := uint64(time.Now().Unix())
+		case <-time.After(sleepDur):
+		}
 
-			// Time-slot-based election: check if we're in-turn.
-			if n.poaEngine != nil && !n.poaEngine.IsInTurn(now) {
-				// Not in-turn. Identify the expected in-turn validator.
-				expectedPub := n.poaEngine.SlotValidator(now)
+		nextHeight := n.ch.Height() + 1
+		now := uint64(time.Now().Unix())
 
-				// If the in-turn validator is online, don't produce.
-				if n.tracker != nil && expectedPub != nil && n.tracker.IsOnline(expectedPub) {
-					continue
-				}
+		// Time-slot-based election: check if we're in-turn.
+		if n.poaEngine != nil && !n.poaEngine.IsInTurn(now) {
+			// Not in-turn. Identify the expected in-turn validator.
+			expectedPub := n.poaEngine.SlotValidator(now)
 
-				// In-turn validator appears offline. Wait staggered backup delay
-				// (proportional to our distance from the in-turn slot).
-				delay := n.poaEngine.BackupDelay(now)
-				n.logger.Debug().
-					Uint64("height", nextHeight).
-					Dur("backup_delay", delay).
-					Msg("Not in-turn, waiting backup delay")
-
-				select {
-				case <-n.ctx.Done():
-					return
-				case <-time.After(delay):
-				}
-
-				// Re-check after delay: a block may have arrived.
-				if n.ch.Height() >= nextHeight {
-					continue
-				}
-
-				if expectedPub != nil && n.tracker != nil {
-					n.tracker.RecordMiss(expectedPub)
-				}
+			// If the in-turn validator is online, don't produce.
+			if n.tracker != nil && expectedPub != nil && n.tracker.IsOnline(expectedPub) {
+				continue
 			}
 
-			// Re-check: a block may have arrived via gossip since we read the tip.
+			// In-turn validator appears offline. Wait staggered backup delay
+			// (proportional to our distance from the in-turn slot).
+			delay := n.poaEngine.BackupDelay(now)
+			n.logger.Debug().
+				Uint64("height", nextHeight).
+				Dur("backup_delay", delay).
+				Msg("Not in-turn, waiting backup delay")
+
+			select {
+			case <-n.ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+
+			// Re-check after delay: a block may have arrived.
 			if n.ch.Height() >= nextHeight {
 				continue
 			}
 
-			// Refresh now: the original may be stale after backup delay
-			// or re-checks. ProduceBlockAt also enforces monotonicity
-			// (>= parent timestamp + 1).
-			now = uint64(time.Now().Unix())
-
-			blk, err := m.ProduceBlockAt(now)
-			if err != nil {
-				n.logger.Error().Err(err).Msg("Failed to produce block")
-				continue
+			if expectedPub != nil && n.tracker != nil {
+				n.tracker.RecordMiss(expectedPub)
 			}
-
-			if err := n.ch.ProcessBlock(blk); err != nil {
-				n.logger.Error().Err(err).Msg("Failed to process own block")
-				if errors.Is(err, chain.ErrCoinbaseNotMature) {
-					for _, t := range blk.Transactions[1:] {
-						n.pool.Remove(t.Hash())
-					}
-					n.logger.Info().Msg("Evicted mempool transactions due to coinbase maturity")
-				}
-				continue
-			}
-			n.pool.RemoveConfirmed(blk.Transactions)
-
-			if n.poaEngine != nil && n.tracker != nil {
-				if signer := n.poaEngine.IdentifySigner(blk.Header); signer != nil {
-					n.tracker.RecordBlock(signer)
-				}
-			}
-
-			if n.p2pNode != nil {
-				if err := n.p2pNode.BroadcastBlock(blk); err != nil {
-					n.logger.Error().Err(err).Msg("Failed to broadcast block")
-				}
-			}
-
-			n.logger.Info().
-				Uint64("height", blk.Header.Height).
-				Str("hash", blk.Hash().String()[:16]+"...").
-				Int("txs", len(blk.Transactions)).
-				Uint64("reward", blk.Transactions[0].Outputs[0].Value).
-				Msg("Block produced")
 		}
+
+		// Re-check: a block may have arrived via gossip since we read the tip.
+		if n.ch.Height() >= nextHeight {
+			continue
+		}
+
+		// Refresh now: the original may be stale after backup delay
+		// or re-checks. ProduceBlockAt also enforces monotonicity
+		// (>= parent timestamp + 1).
+		now = uint64(time.Now().Unix())
+
+		blk, err := m.ProduceBlockAt(now)
+		if err != nil {
+			n.logger.Error().Err(err).Msg("Failed to produce block")
+			continue
+		}
+
+		if err := n.ch.ProcessBlock(blk); err != nil {
+			n.logger.Error().Err(err).Msg("Failed to process own block")
+			if errors.Is(err, chain.ErrCoinbaseNotMature) {
+				for _, t := range blk.Transactions[1:] {
+					n.pool.Remove(t.Hash())
+				}
+				n.logger.Info().Msg("Evicted mempool transactions due to coinbase maturity")
+			}
+			continue
+		}
+		n.pool.RemoveConfirmed(blk.Transactions)
+
+		if n.poaEngine != nil && n.tracker != nil {
+			if signer := n.poaEngine.IdentifySigner(blk.Header); signer != nil {
+				n.tracker.RecordBlock(signer)
+			}
+		}
+
+		if n.p2pNode != nil {
+			if err := n.p2pNode.BroadcastBlock(blk); err != nil {
+				n.logger.Error().Err(err).Msg("Failed to broadcast block")
+			}
+		}
+
+		n.logger.Info().
+			Uint64("height", blk.Header.Height).
+			Str("hash", blk.Hash().String()[:16]+"...").
+			Int("txs", len(blk.Transactions)).
+			Uint64("reward", blk.Transactions[0].Outputs[0].Value).
+			Msg("Block produced")
 	}
 }
 
@@ -1553,86 +1565,97 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 	pool *mempool.Pool, chainIDHex string, blockTime time.Duration,
 	poaEngine *consensus.PoA, tracker *consensus.ValidatorTracker, logger zerolog.Logger) {
 
-	ticker := time.NewTicker(blockTime)
-	defer ticker.Stop()
+	blockTimeSec := int64(blockTime / time.Second)
+	if blockTimeSec < 1 {
+		blockTimeSec = 1
+	}
 
 	for {
+		// Align to next slot boundary.
+		nowUnix := time.Now().Unix()
+		nextSlot := ((nowUnix / blockTimeSec) + 1) * blockTimeSec
+		sleepDur := time.Until(time.Unix(nextSlot, 0))
+		if sleepDur < 0 {
+			sleepDur = 0
+		}
+
 		select {
 		case <-ctx.Done():
 			logger.Info().Msg("Sub-chain PoA miner stopped")
 			return
-		case <-ticker.C:
-			nextHeight := ch.Height() + 1
-			now := uint64(time.Now().Unix())
+		case <-time.After(sleepDur):
+		}
 
-			// Time-slot-based election: check if we're in-turn.
-			if !poaEngine.IsInTurn(now) {
-				expectedPub := poaEngine.SlotValidator(now)
+		nextHeight := ch.Height() + 1
+		now := uint64(time.Now().Unix())
 
-				// If the in-turn validator is online, don't produce.
-				if tracker != nil && expectedPub != nil && tracker.IsOnline(expectedPub) {
-					continue
-				}
+		// Time-slot-based election: check if we're in-turn.
+		if !poaEngine.IsInTurn(now) {
+			expectedPub := poaEngine.SlotValidator(now)
 
-				// In-turn validator appears offline. Wait staggered backup delay.
-				delay := poaEngine.BackupDelay(now)
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(delay):
-				}
-
-				if ch.Height() >= nextHeight {
-					continue
-				}
-
-				if expectedPub != nil && tracker != nil {
-					tracker.RecordMiss(expectedPub)
-				}
+			// If the in-turn validator is online, don't produce.
+			if tracker != nil && expectedPub != nil && tracker.IsOnline(expectedPub) {
+				continue
 			}
 
-			// Re-check: a block may have arrived via gossip since we read the tip.
+			// In-turn validator appears offline. Wait staggered backup delay.
+			delay := poaEngine.BackupDelay(now)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+
 			if ch.Height() >= nextHeight {
 				continue
 			}
 
-			// Refresh now after delays; monotonicity enforced by ProduceBlockAt.
-			now = uint64(time.Now().Unix())
-
-			blk, err := m.ProduceBlockAt(now)
-			if err != nil {
-				logger.Warn().Err(err).Msg("Block production failed")
-				continue
+			if expectedPub != nil && tracker != nil {
+				tracker.RecordMiss(expectedPub)
 			}
-			if err := ch.ProcessBlock(blk); err != nil {
-				logger.Warn().Err(err).Msg("Block rejected")
-				if errors.Is(err, chain.ErrCoinbaseNotMature) {
-					for _, t := range blk.Transactions[1:] {
-						pool.Remove(t.Hash())
-					}
-					logger.Info().Msg("Evicted mempool transactions due to coinbase maturity")
-				}
-				continue
-			}
-			pool.RemoveConfirmed(blk.Transactions)
-
-			if tracker != nil {
-				if signer := poaEngine.IdentifySigner(blk.Header); signer != nil {
-					tracker.RecordBlock(signer)
-				}
-			}
-
-			if n.p2pNode != nil {
-				if err := n.p2pNode.BroadcastSubChainBlock(chainIDHex, blk); err != nil {
-					logger.Warn().Err(err).Msg("Failed to broadcast sub-chain block")
-				}
-			}
-
-			logger.Info().
-				Uint64("height", blk.Header.Height).
-				Str("hash", blk.Hash().String()[:16]+"...").
-				Msg("Sub-chain block produced")
 		}
+
+		// Re-check: a block may have arrived via gossip since we read the tip.
+		if ch.Height() >= nextHeight {
+			continue
+		}
+
+		// Refresh now after delays; monotonicity enforced by ProduceBlockAt.
+		now = uint64(time.Now().Unix())
+
+		blk, err := m.ProduceBlockAt(now)
+		if err != nil {
+			logger.Warn().Err(err).Msg("Block production failed")
+			continue
+		}
+		if err := ch.ProcessBlock(blk); err != nil {
+			logger.Warn().Err(err).Msg("Block rejected")
+			if errors.Is(err, chain.ErrCoinbaseNotMature) {
+				for _, t := range blk.Transactions[1:] {
+					pool.Remove(t.Hash())
+				}
+				logger.Info().Msg("Evicted mempool transactions due to coinbase maturity")
+			}
+			continue
+		}
+		pool.RemoveConfirmed(blk.Transactions)
+
+		if tracker != nil {
+			if signer := poaEngine.IdentifySigner(blk.Header); signer != nil {
+				tracker.RecordBlock(signer)
+			}
+		}
+
+		if n.p2pNode != nil {
+			if err := n.p2pNode.BroadcastSubChainBlock(chainIDHex, blk); err != nil {
+				logger.Warn().Err(err).Msg("Failed to broadcast sub-chain block")
+			}
+		}
+
+		logger.Info().
+			Uint64("height", blk.Header.Height).
+			Str("hash", blk.Hash().String()[:16]+"...").
+			Msg("Sub-chain block produced")
 	}
 }
 

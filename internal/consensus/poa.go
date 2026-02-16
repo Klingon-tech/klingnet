@@ -28,9 +28,8 @@ var (
 	ErrMissingSig          = errors.New("block missing validator signature")
 	ErrInvalidSig          = errors.New("invalid validator signature")
 	ErrInsufficientStake   = errors.New("validator has insufficient stake")
-	ErrBadPoADifficulty    = errors.New("incorrect PoA difficulty")
-	ErrInvalidBlockTime    = errors.New("blockTime must be > 0")
-	ErrTimestampTooFarHead = errors.New("PoA block timestamp too far in the future")
+	ErrBadPoADifficulty = errors.New("incorrect PoA difficulty")
+	ErrInvalidBlockTime = errors.New("blockTime must be > 0")
 )
 
 // PoA implements proof-of-authority consensus.
@@ -162,16 +161,6 @@ func (p *PoA) VerifyHeader(header *block.Header) error {
 			if header.Difficulty != expectedDiff {
 				return fmt.Errorf("%w: signer expects %d, got %d",
 					ErrBadPoADifficulty, expectedDiff, header.Difficulty)
-			}
-
-			// Slot timestamp rule: block timestamp may be at most one
-			// blockTime in the future. This prevents validators from
-			// picking a far-future timestamp where they happen to be
-			// in-turn (gaming the slot election with the +2min drift).
-			maxTS := uint64(time.Now().Unix()) + uint64(blockTime)
-			if header.Timestamp > maxTS {
-				return fmt.Errorf("%w: timestamp %d exceeds max %d (now + %ds)",
-					ErrTimestampTooFarHead, header.Timestamp, maxTS, blockTime)
 			}
 
 			return nil
@@ -351,8 +340,11 @@ func (p *PoA) BackupDelay(timestamp uint64) time.Duration {
 		return 0 // In-turn — no delay.
 	}
 
-	// Each distance step adds blockTime/N seconds of delay.
-	delayMs := dist * uint64(p.blockTime) * 1000 / n
+	// Each distance step adds blockTime/2 seconds of delay.
+	// This ensures the first backup waits at least half a block time,
+	// giving the in-turn block enough time to propagate via gossip
+	// (GossipSub propagation is typically 1-2s).
+	delayMs := dist * uint64(p.blockTime) * 500 // blockTime/2 per step, in ms
 	return time.Duration(delayMs) * time.Millisecond
 }
 

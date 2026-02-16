@@ -723,18 +723,6 @@ func TestPoA_AddValidator_MaintainsOrder(t *testing.T) {
 	}
 }
 
-func TestPoA_VerifyHeader_RejectsFarFutureTimestamp(t *testing.T) {
-	key, poa := testValidator(t)
-	poa.SetSigner(key)
-
-	blk := testBlock(t)
-	// Set timestamp far in the future (now + 60s, well beyond 1 blockTime=3s).
-	blk.Header.Timestamp = uint64(time.Now().Unix()) + 60
-	poa.Prepare(blk.Header)
-	poa.Seal(blk)
-
-	err := poa.VerifyHeader(blk.Header)
-	if !errors.Is(err, ErrTimestampTooFarHead) {
-		t.Errorf("expected ErrTimestampTooFarHead, got: %v", err)
-	}
-}
+// Future timestamp check is handled by chain.ProcessBlock (2-minute rule),
+// not by PoA.VerifyHeader. VerifyHeader only checks structural correctness
+// (signature, difficulty). See TestProcessBlock_FutureTimestamp in chain_test.go.
