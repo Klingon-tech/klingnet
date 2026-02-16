@@ -19,6 +19,7 @@ import (
 type ChainState interface {
 	Height() uint64
 	TipHash() types.Hash
+	TipTimestamp() uint64
 }
 
 // MempoolSelector selects transactions for block inclusion.
@@ -67,7 +68,12 @@ func (m *Miner) ProduceBlock() (*block.Block, error) {
 // ProduceBlockAt builds, seals, and returns a new block with the given timestamp.
 // Use this instead of ProduceBlock when the caller needs the block timestamp to
 // match a previously computed value (e.g. the same timestamp used for slot election).
+// The timestamp is bumped to at least parentTimestamp+1 to guarantee monotonicity.
 func (m *Miner) ProduceBlockAt(timestamp uint64) (*block.Block, error) {
+	// Ensure monotonic: block timestamp must be strictly after parent.
+	if parentTS := m.chain.TipTimestamp(); timestamp <= parentTS {
+		timestamp = parentTS + 1
+	}
 	// Select mempool transactions first to compute total fees.
 	var selected []*tx.Transaction
 	var totalFees uint64

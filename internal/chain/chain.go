@@ -75,16 +75,20 @@ func New(id types.ChainID, db storage.DB, utxoSet utxo.Set, engine consensus.Eng
 
 	cumDiff := blocks.GetCumulativeDifficulty()
 
-	// Recover genesis hash for reorg protection.
+	// Recover genesis hash and tip timestamp for reorg protection.
 	var genesisHash types.Hash
+	var tipTimestamp uint64
 	genBlk, err := blocks.GetBlockByHeight(0)
 	if err == nil {
 		genesisHash = genBlk.Hash()
 	}
+	if tipBlk, err := blocks.GetBlock(tipHash); err == nil {
+		tipTimestamp = tipBlk.Header.Timestamp
+	}
 
 	ch := &Chain{
-		ID:          id,
-		state:       &State{TipHash: tipHash, Height: height, Supply: supply, CumulativeDifficulty: cumDiff},
+		ID:    id,
+		state: &State{TipHash: tipHash, Height: height, Supply: supply, CumulativeDifficulty: cumDiff, TipTimestamp: tipTimestamp},
 		blocks:      blocks,
 		utxos:       utxoSet,
 		engine:      engine,
@@ -135,6 +139,7 @@ func (c *Chain) InitFromGenesis(gen *config.Genesis) error {
 	c.state.TipHash = hash
 	c.state.Height = 0
 	c.state.Supply = supply
+	c.state.TipTimestamp = blk.Header.Timestamp
 	c.genesisHash = hash
 
 	// Store protocol limits from genesis.
@@ -180,6 +185,11 @@ func (c *Chain) Height() uint64 {
 // TipHash returns the hash of the current chain tip.
 func (c *Chain) TipHash() types.Hash {
 	return c.state.TipHash
+}
+
+// TipTimestamp returns the timestamp of the current tip block.
+func (c *Chain) TipTimestamp() uint64 {
+	return c.state.TipTimestamp
 }
 
 // Supply returns the total coins in circulation.

@@ -320,6 +320,7 @@ func (c *Chain) Reorg(newTipHash types.Hash) error {
 	tipHash := tip.Hash()
 	c.state.TipHash = tipHash
 	c.state.Height = tip.Header.Height
+	c.state.TipTimestamp = tip.Header.Timestamp
 	if err := c.blocks.SetTip(tipHash, tip.Header.Height, c.state.Supply); err != nil {
 		return fmt.Errorf("set new tip: %w", err)
 	}

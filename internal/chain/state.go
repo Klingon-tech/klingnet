@@ -8,6 +8,7 @@ type State struct {
 	TipHash              types.Hash
 	Supply               uint64 // Total coins in circulation (genesis alloc + cumulative rewards).
 	CumulativeDifficulty uint64 // Sum of all block difficulties (for PoW fork choice).
+	TipTimestamp         uint64 // Timestamp of the current tip block.
 }
 
 // IsGenesis returns true if no blocks have been processed yet.

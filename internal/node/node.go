@@ -638,7 +638,6 @@ func (n *Node) runStartupSync() {
 	if len(peers) < limit {
 		limit = len(peers)
 	}
-	localTip := n.ch.TipHash().String()
 	for _, p := range peers[:limit] {
 		reqCtx, cancel := context.WithTimeout(n.ctx, 5*time.Second)
 		resp, err := n.syncer.RequestHeight(reqCtx, p.ID)
@@ -651,16 +650,16 @@ func (n *Node) runStartupSync() {
 			bestTipHash = resp.TipHash
 			bestPeer = p.ID
 		} else if resp.Height == bestHeight && resp.TipHash != bestTipHash {
-			// Peer at same height with a different tip — track the one
-			// that also differs from our local tip for fork detection.
-			if resp.TipHash != localTip {
-				bestTipHash = resp.TipHash
-				bestPeer = p.ID
-			}
+			bestTipHash = resp.TipHash
+			bestPeer = p.ID
 		}
 	}
 
+	// Read local state AFTER peer queries complete — reading before the
+	// loop created a race where mining during the peer round-trips made
+	// localTip stale, causing false same-height fork detections.
 	localHeight := n.ch.Height()
+	localTip := n.ch.TipHash().String()
 
 	// Detect same-height fork: heights match but tips differ.
 	if bestHeight == localHeight && bestHeight > 0 {
@@ -888,6 +887,11 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 			if n.ch.Height() >= nextHeight {
 				continue
 			}
+
+			// Refresh now: the original may be stale after backup delay
+			// or re-checks. ProduceBlockAt also enforces monotonicity
+			// (>= parent timestamp + 1).
+			now = uint64(time.Now().Unix())
 
 			blk, err := m.ProduceBlockAt(now)
 			if err != nil {
@@ -1292,7 +1296,6 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 	if len(peers) < limit {
 		limit = len(peers)
 	}
-	localTip := ch.TipHash().String()
 	for _, p := range peers[:limit] {
 		reqCtx, cancel := context.WithTimeout(n.ctx, 5*time.Second)
 		resp, err := n.syncer.RequestSubChainHeight(reqCtx, p.ID, chainIDHex)
@@ -1305,14 +1308,14 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 			bestTipHash = resp.TipHash
 			bestPeer = p.ID
 		} else if resp.Height == bestHeight && resp.TipHash != bestTipHash {
-			if resp.TipHash != localTip {
-				bestTipHash = resp.TipHash
-				bestPeer = p.ID
-			}
+			bestTipHash = resp.TipHash
+			bestPeer = p.ID
 		}
 	}
 
+	// Read local state after peer queries to avoid stale-tip race.
 	localHeight := ch.Height()
+	localTip := ch.TipHash().String()
 
 	// Detect same-height fork: heights match but tips differ.
 	if bestHeight == localHeight && bestHeight > 0 {
@@ -1592,6 +1595,9 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 			if ch.Height() >= nextHeight {
 				continue
 			}
+
+			// Refresh now after delays; monotonicity enforced by ProduceBlockAt.
+			now = uint64(time.Now().Unix())
 
 			blk, err := m.ProduceBlockAt(now)
 			if err != nil {

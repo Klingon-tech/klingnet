@@ -156,6 +156,7 @@ func (c *Chain) ProcessBlock(blk *block.Block) error {
 	// Update chain tip.
 	c.state.TipHash = hash
 	c.state.Height = blk.Header.Height
+	c.state.TipTimestamp = blk.Header.Timestamp
 	if err := c.blocks.SetTip(hash, blk.Header.Height, c.state.Supply); err != nil {
 		return fmt.Errorf("set tip: %w", err)
 	}
