@@ -1200,8 +1200,10 @@ func TestProcessBlock_FutureTimestamp(t *testing.T) {
 	poa.Seal(blk)
 
 	err := ch.ProcessBlock(blk)
-	if !errors.Is(err, ErrTimestampTooFuture) {
-		t.Errorf("expected ErrTimestampTooFuture, got: %v", err)
+	// PoA's slot timestamp rule (blockTime ahead) catches this before
+	// the chain's generic +2min check, so we accept either error.
+	if !errors.Is(err, ErrTimestampTooFuture) && !errors.Is(err, consensus.ErrTimestampTooFarHead) {
+		t.Errorf("expected ErrTimestampTooFuture or ErrTimestampTooFarHead, got: %v", err)
 	}
 }
 

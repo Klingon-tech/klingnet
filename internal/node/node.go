@@ -889,7 +889,7 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 				continue
 			}
 
-			blk, err := m.ProduceBlock()
+			blk, err := m.ProduceBlockAt(now)
 			if err != nil {
 				n.logger.Error().Err(err).Msg("Failed to produce block")
 				continue
@@ -1593,7 +1593,7 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 				continue
 			}
 
-			blk, err := m.ProduceBlock()
+			blk, err := m.ProduceBlockAt(now)
 			if err != nil {
 				logger.Warn().Err(err).Msg("Block production failed")
 				continue

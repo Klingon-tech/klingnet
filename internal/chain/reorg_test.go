@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/Klingon-tech/klingnet-chain/config"
@@ -322,8 +323,8 @@ func TestReorg_TxIndexUpdated(t *testing.T) {
 }
 
 func TestReorg_InTurnBeatsOutOfTurn(t *testing.T) {
-	// Two validators: key1 and key2. The chain uses time-slot election
-	// so we can craft timestamps where one is in-turn and the other is out-of-turn.
+	// Two validators. The chain uses time-slot election so we can craft
+	// timestamps where one is in-turn and the other is out-of-turn.
 	key1, err := crypto.GenerateKey()
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
@@ -365,13 +366,31 @@ func TestReorg_InTurnBeatsOutOfTurn(t *testing.T) {
 
 	genesisHash := ch.TipHash()
 
-	// Find a timestamp where key2 is in-turn (slot validator = key2).
-	// blockTime=3, 2 validators: slot = (timestamp / 3) % 2.
-	// slot 0 → key1, slot 1 → key2.
-	// timestamp=3 → slot=(3/3)%2=1 → key2 is in-turn.
-	ts := uint64(1700000003)
+	// Dynamically find a timestamp where key1 and key2 have different slots.
+	// With canonical ordering, we don't know which index each key gets,
+	// so use SlotValidator to determine in-turn / out-of-turn.
+	var ts uint64
+	var inTurnKey, outOfTurnKey *crypto.PrivateKey
+	for i := uint64(1); i < 20; i++ {
+		candidate := 1700000000 + i*3
+		sv := poa.SlotValidator(candidate)
+		if bytes.Equal(sv, key1.PublicKey()) {
+			ts = candidate
+			inTurnKey = key1
+			outOfTurnKey = key2
+			break
+		} else if bytes.Equal(sv, key2.PublicKey()) {
+			ts = candidate
+			inTurnKey = key2
+			outOfTurnKey = key1
+			break
+		}
+	}
+	if ts == 0 {
+		t.Fatal("could not find a suitable timestamp")
+	}
 
-	// Build block A1 signed by key1 (out-of-turn, diff=1).
+	// Build block A signed by the out-of-turn key (diff=1).
 	coinbaseA := &tx.Transaction{
 		Version: 1,
 		Inputs:  []tx.Input{{PrevOut: types.Outpoint{}}},
@@ -390,7 +409,7 @@ func TestReorg_InTurnBeatsOutOfTurn(t *testing.T) {
 	}
 	blkA := block.NewBlock(headerA, []*tx.Transaction{coinbaseA})
 
-	poa.SetSigner(key1) // key1 is out-of-turn at ts=1700000003
+	poa.SetSigner(outOfTurnKey)
 	if err := poa.Prepare(blkA.Header); err != nil {
 		t.Fatalf("Prepare A: %v", err)
 	}
@@ -408,12 +427,12 @@ func TestReorg_InTurnBeatsOutOfTurn(t *testing.T) {
 		t.Fatalf("tip should be A after processing")
 	}
 
-	// Build block B1 signed by key2 (in-turn, diff=2) at the same height.
+	// Build block B signed by the in-turn key (diff=2) at the same height.
 	coinbaseB := &tx.Transaction{
 		Version: 1,
 		Inputs:  []tx.Input{{PrevOut: types.Outpoint{}}},
 		Outputs: []tx.Output{{
-			Value:  1001, // Different value to get different tx hash.
+			Value:  1001, // Different value for unique tx hash.
 			Script: types.Script{Type: types.ScriptTypeP2PKH, Data: addr[:]},
 		}},
 	}
@@ -427,7 +446,7 @@ func TestReorg_InTurnBeatsOutOfTurn(t *testing.T) {
 	}
 	blkB := block.NewBlock(headerB, []*tx.Transaction{coinbaseB})
 
-	poa.SetSigner(key2) // key2 is in-turn at ts=1700000003
+	poa.SetSigner(inTurnKey)
 	if err := poa.Prepare(blkB.Header); err != nil {
 		t.Fatalf("Prepare B: %v", err)
 	}

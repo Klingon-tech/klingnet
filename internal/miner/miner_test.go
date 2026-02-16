@@ -326,6 +326,20 @@ func TestMiner_ProduceBlock_UnlimitedSupply(t *testing.T) {
 	}
 }
 
+func TestMiner_ProduceBlockAt_UsesGivenTimestamp(t *testing.T) {
+	m, _ := testMiner(t)
+
+	ts := uint64(1700000042)
+	blk, err := m.ProduceBlockAt(ts)
+	if err != nil {
+		t.Fatalf("ProduceBlockAt: %v", err)
+	}
+
+	if blk.Header.Timestamp != ts {
+		t.Errorf("timestamp = %d, want %d", blk.Header.Timestamp, ts)
+	}
+}
+
 // --- UTXOAdapter ---
 
 func TestUTXOAdapter_GetUTXO(t *testing.T) {

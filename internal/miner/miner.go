@@ -57,10 +57,17 @@ func New(chain ChainState, engine consensus.Engine, pool MempoolSelector,
 	}
 }
 
-// ProduceBlock builds, seals, and returns a new block.
+// ProduceBlock builds, seals, and returns a new block using the current time.
 // The coinbase output value = block reward + sum of all tx fees.
 // The block is NOT applied to the chain — the caller must call ProcessBlock.
 func (m *Miner) ProduceBlock() (*block.Block, error) {
+	return m.ProduceBlockAt(uint64(time.Now().Unix()))
+}
+
+// ProduceBlockAt builds, seals, and returns a new block with the given timestamp.
+// Use this instead of ProduceBlock when the caller needs the block timestamp to
+// match a previously computed value (e.g. the same timestamp used for slot election).
+func (m *Miner) ProduceBlockAt(timestamp uint64) (*block.Block, error) {
 	// Select mempool transactions first to compute total fees.
 	var selected []*tx.Transaction
 	var totalFees uint64
@@ -104,7 +111,7 @@ func (m *Miner) ProduceBlock() (*block.Block, error) {
 		Version:    block.CurrentVersion,
 		PrevHash:   m.chain.TipHash(),
 		MerkleRoot: merkle,
-		Timestamp:  uint64(time.Now().Unix()),
+		Timestamp:  timestamp,
 		Height:     m.chain.Height() + 1,
 	}
 

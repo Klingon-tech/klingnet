@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -22,13 +23,14 @@ const (
 
 // PoA errors.
 var (
-	ErrNoValidators      = errors.New("no validators configured")
-	ErrNotValidator      = errors.New("signer is not an authorized validator")
-	ErrMissingSig        = errors.New("block missing validator signature")
-	ErrInvalidSig        = errors.New("invalid validator signature")
-	ErrInsufficientStake = errors.New("validator has insufficient stake")
-	ErrBadPoADifficulty  = errors.New("incorrect PoA difficulty")
-	ErrInvalidBlockTime  = errors.New("blockTime must be > 0")
+	ErrNoValidators        = errors.New("no validators configured")
+	ErrNotValidator        = errors.New("signer is not an authorized validator")
+	ErrMissingSig          = errors.New("block missing validator signature")
+	ErrInvalidSig          = errors.New("invalid validator signature")
+	ErrInsufficientStake   = errors.New("validator has insufficient stake")
+	ErrBadPoADifficulty    = errors.New("incorrect PoA difficulty")
+	ErrInvalidBlockTime    = errors.New("blockTime must be > 0")
+	ErrTimestampTooFarHead = errors.New("PoA block timestamp too far in the future")
 )
 
 // PoA implements proof-of-authority consensus.
@@ -55,10 +57,20 @@ type PoA struct {
 	stakeChecker StakeChecker
 }
 
+// sortValidators sorts the validator slice by public key bytes (ascending).
+// This ensures canonical ordering: all nodes agree on validator indices
+// regardless of the order validators were discovered or added.
+func sortValidators(validators [][]byte) {
+	sort.Slice(validators, func(i, j int) bool {
+		return bytes.Compare(validators[i], validators[j]) < 0
+	})
+}
+
 // NewPoA creates a new PoA engine with the given validator public keys and
 // block time (seconds). The blockTime is used for time-slot-based validator
 // election: validator = validators[timestamp / blockTime % N].
 // These validators are treated as genesis validators (always trusted).
+// Validators are sorted by public key for canonical ordering.
 func NewPoA(validators [][]byte, blockTime int) (*PoA, error) {
 	if len(validators) == 0 {
 		return nil, ErrNoValidators
@@ -66,6 +78,7 @@ func NewPoA(validators [][]byte, blockTime int) (*PoA, error) {
 	if blockTime <= 0 {
 		return nil, ErrInvalidBlockTime
 	}
+	sortValidators(validators)
 	// Copy genesis validators so the original set is preserved.
 	genesis := make([][]byte, len(validators))
 	copy(genesis, validators)
@@ -151,6 +164,16 @@ func (p *PoA) VerifyHeader(header *block.Header) error {
 					ErrBadPoADifficulty, expectedDiff, header.Difficulty)
 			}
 
+			// Slot timestamp rule: block timestamp may be at most one
+			// blockTime in the future. This prevents validators from
+			// picking a far-future timestamp where they happen to be
+			// in-turn (gaming the slot election with the +2min drift).
+			maxTS := uint64(time.Now().Unix()) + uint64(blockTime)
+			if header.Timestamp > maxTS {
+				return fmt.Errorf("%w: timestamp %d exceeds max %d (now + %ds)",
+					ErrTimestampTooFarHead, header.Timestamp, maxTS, blockTime)
+			}
+
 			return nil
 		}
 	}
@@ -226,11 +249,13 @@ func (p *PoA) IsGenesisValidator(pubKey []byte) bool {
 
 // AddValidator adds a new public key to the validator set.
 // This allows dynamically staked validators to be accepted.
+// The set is re-sorted after insertion to maintain canonical ordering.
 func (p *PoA) AddValidator(pubKey []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.isValidator(pubKey) {
 		p.Validators = append(p.Validators, pubKey)
+		sortValidators(p.Validators)
 	}
 }
 

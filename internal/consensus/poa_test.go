@@ -674,3 +674,67 @@ func TestPoA_VerifyHeader_RejectsBadDifficulty(t *testing.T) {
 		t.Errorf("expected ErrBadPoADifficulty, got: %v", err)
 	}
 }
+
+func TestPoA_CanonicalValidatorOrder(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+	key3, _ := crypto.GenerateKey()
+
+	// Create two PoA engines with the same validators in different input order.
+	pubs := [][]byte{key1.PublicKey(), key2.PublicKey(), key3.PublicKey()}
+	reversed := [][]byte{key3.PublicKey(), key2.PublicKey(), key1.PublicKey()}
+
+	poa1, _ := NewPoA(pubs, 3)
+	poa2, _ := NewPoA(reversed, 3)
+
+	// Both should have the same canonical order → same slot election.
+	for i := uint64(0); i < 20; i++ {
+		ts := 1700000000 + i*3
+		v1 := poa1.SlotValidator(ts)
+		v2 := poa2.SlotValidator(ts)
+		if !bytes.Equal(v1, v2) {
+			t.Fatalf("slot mismatch at ts=%d: %x vs %x", ts, v1[:8], v2[:8])
+		}
+	}
+}
+
+func TestPoA_AddValidator_MaintainsOrder(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+	key3, _ := crypto.GenerateKey()
+
+	// Create with key1 only, then add key2 and key3 in "reverse" order.
+	poa1, _ := NewPoA([][]byte{key1.PublicKey()}, 3)
+	poa1.AddValidator(key3.PublicKey())
+	poa1.AddValidator(key2.PublicKey())
+
+	// Create with all three at once.
+	poa2, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey(), key3.PublicKey()}, 3)
+
+	// Both should produce the same slot elections.
+	for i := uint64(0); i < 20; i++ {
+		ts := 1700000000 + i*3
+		v1 := poa1.SlotValidator(ts)
+		v2 := poa2.SlotValidator(ts)
+		if !bytes.Equal(v1, v2) {
+			t.Fatalf("slot mismatch at ts=%d after AddValidator: %x vs %x",
+				ts, v1[:8], v2[:8])
+		}
+	}
+}
+
+func TestPoA_VerifyHeader_RejectsFarFutureTimestamp(t *testing.T) {
+	key, poa := testValidator(t)
+	poa.SetSigner(key)
+
+	blk := testBlock(t)
+	// Set timestamp far in the future (now + 60s, well beyond 1 blockTime=3s).
+	blk.Header.Timestamp = uint64(time.Now().Unix()) + 60
+	poa.Prepare(blk.Header)
+	poa.Seal(blk)
+
+	err := poa.VerifyHeader(blk.Header)
+	if !errors.Is(err, ErrTimestampTooFarHead) {
+		t.Errorf("expected ErrTimestampTooFarHead, got: %v", err)
+	}
+}
