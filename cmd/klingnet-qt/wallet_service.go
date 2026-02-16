@@ -531,27 +531,6 @@ func (w *WalletService) GetTokenBalances(addresses []string) ([]TokenBalanceInfo
 		}
 	}
 
-	// Final metadata backfill by token ID. This helps when token_getBalance
-	// entries were returned without metadata for some addresses.
-	for tokenID, b := range merged {
-		if b.Name != "" && b.Symbol != "" {
-			continue
-		}
-		var info rpc.TokenInfoResult
-		if err := client.Call("token_getInfo", rpc.TokenIDParam{TokenID: tokenID}, &info); err != nil {
-			continue
-		}
-		if b.Name == "" {
-			b.Name = info.Name
-		}
-		if b.Symbol == "" {
-			b.Symbol = info.Symbol
-		}
-		if b.Decimals == 0 {
-			b.Decimals = info.Decimals
-		}
-	}
-
 	balances := make([]TokenBalanceInfo, 0, len(merged))
 	for _, b := range merged {
 		balances = append(balances, *b)

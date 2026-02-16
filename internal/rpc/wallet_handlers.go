@@ -1334,9 +1334,10 @@ func (s *Server) handleWalletMintToken(req *Request) (interface{}, *Error) {
 	tokenID := token.DeriveTokenID(firstInput.TxID, firstInput.Index)
 
 	// Mint output: ScriptTypeMint, value=0, carries token data.
+	// Encode metadata in Data so all nodes can extract it during block processing.
 	mintScript := types.Script{
 		Type: types.ScriptTypeMint,
-		Data: recipientAddr.Bytes(),
+		Data: token.EncodeMintData(recipientAddr, params.TokenName, params.Symbol, params.Decimals),
 	}
 	builder.AddTokenOutput(0, mintScript, types.TokenData{
 		ID:     tokenID,

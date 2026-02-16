@@ -42,12 +42,13 @@ type Node struct {
 	logger  zerolog.Logger
 
 	// Core
-	db        storage.DB
-	utxoStore *utxo.Store
-	engine    consensus.Engine
-	ch        *chain.Chain
-	pool      *mempool.Pool
-	tracker   *consensus.ValidatorTracker
+	db         storage.DB
+	utxoStore  *utxo.Store
+	engine     consensus.Engine
+	ch         *chain.Chain
+	pool       *mempool.Pool
+	tracker    *consensus.ValidatorTracker
+	tokenStore *token.Store
 
 	// Networking
 	p2pNode *p2p.Node
@@ -115,6 +116,7 @@ func New(cfg *config.Config) (*Node, error) {
 	}
 
 	utxoStore := utxo.NewStore(db)
+	tokenStore := token.NewStore(db)
 	logger.Info().Str("path", cfg.ChainDataDir()).Msg("Database opened")
 
 	// ── 5. Validator key ────────────────────────────────────────────
@@ -242,6 +244,7 @@ func New(cfg *config.Config) (*Node, error) {
 			return
 		}
 		pool.RemoveConfirmed(blk.Transactions)
+		token.ExtractAndStoreMetadata(tokenStore, &blk)
 
 		if poaEngine != nil {
 			if signer := poaEngine.IdentifySigner(blk.Header); signer != nil {
@@ -403,7 +406,6 @@ func New(cfg *config.Config) (*Node, error) {
 	}
 
 	// Wire token store.
-	tokenStore := token.NewStore(db)
 	rpcServer.SetTokenStore(tokenStore)
 
 	// Wire validator tracker.
@@ -443,6 +445,7 @@ func New(cfg *config.Config) (*Node, error) {
 		ch:           ch,
 		pool:         pool,
 		tracker:      tracker,
+		tokenStore:   tokenStore,
 		p2pNode:      p2pNode,
 		syncer:       syncer,
 		rpcServer:    rpcServer,
@@ -648,6 +651,7 @@ func (n *Node) runStartupSync() {
 				return
 			}
 			n.pool.RemoveConfirmed(blk.Transactions)
+			token.ExtractAndStoreMetadata(n.tokenStore, blk)
 		}
 
 		synced := n.ch.Height() - localHeight
@@ -751,6 +755,7 @@ func (n *Node) resolveFork(peerID peer.ID, failedHeight, peerTip uint64) {
 				return
 			}
 			n.pool.RemoveConfirmed(blk.Transactions)
+			token.ExtractAndStoreMetadata(n.tokenStore, blk)
 		}
 	}
 
