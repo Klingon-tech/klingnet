@@ -31,8 +31,7 @@ type Flags struct {
 	RPCAddr    string
 	RPCPort    int
 	RPCAllowed string
-	RPCWS      bool
-	RPCWSPort  int
+	RPCCORS    string
 
 	// Wallet
 	Wallet     bool
@@ -54,6 +53,14 @@ type Flags struct {
 
 	// Remaining args
 	Args []string
+
+	// Explicitly-set bool flags (for true/false overrides).
+	SetP2P        bool
+	SetRPC        bool
+	SetNoDiscover bool
+	SetWallet     bool
+	SetMine       bool
+	SetLogJSON    bool
 }
 
 // ParseFlags parses command-line flags.
@@ -87,8 +94,7 @@ func ParseFlags() *Flags {
 	fs.StringVar(&f.RPCAddr, "rpc-addr", "", "RPC listen address")
 	fs.IntVar(&f.RPCPort, "rpc-port", 0, "RPC listen port")
 	fs.StringVar(&f.RPCAllowed, "rpc-allowed", "", "Allowed IPs for RPC")
-	fs.BoolVar(&f.RPCWS, "rpc-ws", false, "Enable WebSocket RPC")
-	fs.IntVar(&f.RPCWSPort, "rpc-ws-port", 0, "WebSocket port")
+	fs.StringVar(&f.RPCCORS, "rpc-cors", "", "Allowed CORS origins for RPC (comma-separated)")
 
 	// Wallet
 	fs.BoolVar(&f.Wallet, "wallet", false, "Enable integrated wallet")
@@ -125,6 +131,12 @@ func ParseFlags() *Flags {
 	if isFlagSet(fs, "testnet") {
 		f.Network = "testnet"
 	}
+	f.SetP2P = isFlagSet(fs, "p2p")
+	f.SetRPC = isFlagSet(fs, "rpc")
+	f.SetNoDiscover = isFlagSet(fs, "nodiscover")
+	f.SetWallet = isFlagSet(fs, "wallet")
+	f.SetMine = isFlagSet(fs, "mine")
+	f.SetLogJSON = isFlagSet(fs, "log-json")
 
 	f.Args = fs.Args()
 
@@ -153,6 +165,9 @@ func ApplyFlags(cfg *Config, f *Flags) {
 	}
 
 	// P2P
+	if f.SetP2P {
+		cfg.P2P.Enabled = f.P2P
+	}
 	if f.P2PPort != 0 {
 		cfg.P2P.Port = f.P2PPort
 	}
@@ -162,14 +177,17 @@ func ApplyFlags(cfg *Config, f *Flags) {
 	if f.MaxPeers != 0 {
 		cfg.P2P.MaxPeers = f.MaxPeers
 	}
-	if f.NoDiscover {
-		cfg.P2P.NoDiscover = true
+	if f.SetNoDiscover {
+		cfg.P2P.NoDiscover = f.NoDiscover
 	}
 	if f.DHTServer {
 		cfg.P2P.DHTServer = true
 	}
 
 	// RPC
+	if f.SetRPC {
+		cfg.RPC.Enabled = f.RPC
+	}
 	if f.RPCAddr != "" {
 		cfg.RPC.Addr = f.RPCAddr
 	}
@@ -179,24 +197,21 @@ func ApplyFlags(cfg *Config, f *Flags) {
 	if f.RPCAllowed != "" {
 		cfg.RPC.AllowedIPs = parseStringList(f.RPCAllowed)
 	}
-	if f.RPCWS {
-		cfg.RPC.EnableWS = true
-	}
-	if f.RPCWSPort != 0 {
-		cfg.RPC.WSPort = f.RPCWSPort
+	if f.RPCCORS != "" {
+		cfg.RPC.CORSOrigins = parseStringList(f.RPCCORS)
 	}
 
 	// Wallet
-	if f.Wallet {
-		cfg.Wallet.Enabled = true
+	if f.SetWallet {
+		cfg.Wallet.Enabled = f.Wallet
 	}
 	if f.WalletFile != "" {
 		cfg.Wallet.FilePath = f.WalletFile
 	}
 
 	// Mining
-	if f.Mine {
-		cfg.Mining.Enabled = true
+	if f.SetMine {
+		cfg.Mining.Enabled = f.Mine
 	}
 	if f.Coinbase != "" {
 		cfg.Mining.Coinbase = f.Coinbase
@@ -232,8 +247,8 @@ func ApplyFlags(cfg *Config, f *Flags) {
 	if f.LogFile != "" {
 		cfg.Log.File = f.LogFile
 	}
-	if f.LogJSON {
-		cfg.Log.JSON = true
+	if f.SetLogJSON {
+		cfg.Log.JSON = f.LogJSON
 	}
 }
 
@@ -278,8 +293,7 @@ RPC Options:
   --rpc-addr      RPC listen address (default: 127.0.0.1)
   --rpc-port      RPC port (mainnet: 8545, testnet: 8645)
   --rpc-allowed   Allowed IPs for RPC (comma-separated)
-  --rpc-ws        Enable WebSocket RPC
-  --rpc-ws-port   WebSocket port
+  --rpc-cors      Allowed CORS origins for RPC (comma-separated)
 
 Wallet Options:
   --wallet        Enable integrated wallet
@@ -377,6 +391,9 @@ func Load() (*Config, *Flags, error) {
 
 	// Apply flags (highest precedence)
 	ApplyFlags(cfg, flags)
+	if err := Validate(cfg); err != nil {
+		return nil, nil, fmt.Errorf("invalid config: %w", err)
+	}
 
 	return cfg, flags, nil
 }
@@ -397,6 +414,9 @@ func LoadFromFile(dataDir string, network NetworkType) (*Config, error) {
 	}
 	if err := ApplyFileConfig(cfg, fileValues); err != nil {
 		return nil, fmt.Errorf("applying config: %w", err)
+	}
+	if err := Validate(cfg); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 	return cfg, nil
 }

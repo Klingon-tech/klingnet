@@ -113,14 +113,8 @@ func setConfigValue(cfg *Config, key, value string) error {
 		cfg.RPC.Port = port
 	case "rpc.allowed":
 		cfg.RPC.AllowedIPs = parseStringList(value)
-	case "rpc.ws":
-		cfg.RPC.EnableWS = parseBool(value)
-	case "rpc.wsport":
-		port, err := strconv.Atoi(value)
-		if err != nil {
-			return err
-		}
-		cfg.RPC.WSPort = port
+	case "rpc.cors":
+		cfg.RPC.CORSOrigins = parseStringList(value)
 
 	// Wallet
 	case "wallet.enabled", "wallet":
@@ -234,10 +228,8 @@ rpc.enabled = true
 rpc.addr = 127.0.0.1
 rpc.port = ` + defaultRPCPort(network) + `
 rpc.allowed = 127.0.0.1
-
-# WebSocket RPC
-rpc.ws = false
-rpc.wsport = ` + defaultWSPort(network) + `
+# CORS allowed origins ("*" for all)
+# rpc.cors = http://localhost:3000
 
 # ============================================================================
 # Wallet
@@ -295,11 +287,4 @@ func defaultRPCPort(network NetworkType) string {
 		return "8645"
 	}
 	return "8545"
-}
-
-func defaultWSPort(network NetworkType) string {
-	if network == Testnet {
-		return "8646"
-	}
-	return "8546"
 }

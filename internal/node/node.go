@@ -62,11 +62,11 @@ type Node struct {
 	poaEngine    *consensus.PoA
 
 	// Sub-chains
-	scManager  *subchain.Manager
-	scMinerMu  sync.Mutex
-	scMiners   map[types.ChainID]context.CancelFunc
-	scHBMu     sync.Mutex
-	scHBs      map[types.ChainID]context.CancelFunc
+	scManager *subchain.Manager
+	scMinerMu sync.Mutex
+	scMiners  map[types.ChainID]context.CancelFunc
+	scHBMu    sync.Mutex
+	scHBs     map[types.ChainID]context.CancelFunc
 
 	// Lifecycle
 	ctx    context.Context
@@ -208,121 +208,127 @@ func New(cfg *config.Config) (*Node, error) {
 	}
 
 	// ── 10. P2P ─────────────────────────────────────────────────────
-	p2pNode := p2p.New(p2p.Config{
-		ListenAddr: cfg.P2P.ListenAddr,
-		Port:       cfg.P2P.Port,
-		Seeds:      cfg.P2P.Seeds,
-		MaxPeers:   cfg.P2P.MaxPeers,
-		NoDiscover: cfg.P2P.NoDiscover,
-		DB:         db,
-		DHTServer:  cfg.P2P.DHTServer,
-		NetworkID:  genesis.ChainID,
-		DataDir:    cfg.ChainDataDir(),
-	})
+	var p2pNode *p2p.Node
+	var syncer *p2p.Syncer
+	if cfg.P2P.Enabled {
+		p2pNode = p2p.New(p2p.Config{
+			ListenAddr: cfg.P2P.ListenAddr,
+			Port:       cfg.P2P.Port,
+			Seeds:      cfg.P2P.Seeds,
+			MaxPeers:   cfg.P2P.MaxPeers,
+			NoDiscover: cfg.P2P.NoDiscover,
+			DB:         db,
+			DHTServer:  cfg.P2P.DHTServer,
+			NetworkID:  genesis.ChainID,
+			DataDir:    cfg.ChainDataDir(),
+		})
 
-	genesisHash, _ := genesis.Hash()
-	p2pNode.SetGenesisHash(genesisHash)
-	p2pNode.SetHeightFn(func() uint64 { return ch.Height() })
+		genesisHash, _ := genesis.Hash()
+		p2pNode.SetGenesisHash(genesisHash)
+		p2pNode.SetHeightFn(func() uint64 { return ch.Height() })
 
-	// Block handler.
-	p2pNode.SetBlockHandler(func(from peer.ID, data []byte) {
-		var blk block.Block
-		if err := json.Unmarshal(data, &blk); err != nil {
-			logger.Debug().Err(err).Msg("Failed to unmarshal block")
-			p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidBlock, "unmarshal: "+err.Error())
-			return
-		}
-		if err := ch.ProcessBlock(&blk); err != nil {
-			if !errors.Is(err, chain.ErrBlockKnown) &&
-				!errors.Is(err, chain.ErrPrevNotFound) &&
-				!errors.Is(err, chain.ErrForkDetected) {
-				p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidBlock, err.Error())
-			}
-			if !errors.Is(err, chain.ErrBlockKnown) {
-				logger.Debug().Err(err).Uint64("height", blk.Header.Height).Msg("Failed to process block")
-			}
-			return
-		}
-		pool.RemoveConfirmed(blk.Transactions)
-		token.ExtractAndStoreMetadata(tokenStore, &blk)
-
-		if poaEngine != nil {
-			if signer := poaEngine.IdentifySigner(blk.Header); signer != nil {
-				tracker.RecordBlock(signer)
-			}
-		}
-
-		logger.Info().
-			Uint64("height", blk.Header.Height).
-			Str("hash", blk.Hash().String()[:16]+"...").
-			Int("txs", len(blk.Transactions)).
-			Msg("Block received and applied")
-	})
-
-	// Tx handler.
-	p2pNode.SetTxHandler(func(from peer.ID, data []byte) {
-		var t tx.Transaction
-		if err := json.Unmarshal(data, &t); err != nil {
-			logger.Debug().Err(err).Msg("Failed to unmarshal transaction")
-			p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidTx, "unmarshal: "+err.Error())
-			return
-		}
-		fee, err := pool.Add(&t)
-		if err != nil {
-			logger.Debug().Err(err).Msg("Rejected transaction")
-			p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidTx, err.Error())
-			return
-		}
-		logger.Info().
-			Str("tx", t.Hash().String()[:16]+"...").
-			Uint64("fee", fee).
-			Msg("Transaction added to mempool")
-	})
-
-	if err := p2pNode.Start(); err != nil {
-		db.Close()
-		if validatorKey != nil {
-			validatorKey.Zero()
-		}
-		return nil, fmt.Errorf("start P2P: %w", err)
-	}
-
-	logger.Info().
-		Str("id", p2pNode.ID().String()).
-		Int("port", cfg.P2P.Port).
-		Bool("discovery", !cfg.P2P.NoDiscover).
-		Msg("P2P node started")
-
-	// Heartbeat topic.
-	if err := p2pNode.JoinHeartbeat(); err != nil {
-		logger.Warn().Err(err).Msg("Failed to join heartbeat topic")
-	} else {
-		p2pNode.SetHeartbeatHandler(func(msg *p2p.HeartbeatMessage) {
-			if poaEngine != nil && !poaEngine.IsValidator(msg.PubKey) {
+		// Block handler.
+		p2pNode.SetBlockHandler(func(from peer.ID, data []byte) {
+			var blk block.Block
+			if err := json.Unmarshal(data, &blk); err != nil {
+				logger.Debug().Err(err).Msg("Failed to unmarshal block")
+				p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidBlock, "unmarshal: "+err.Error())
 				return
 			}
-			tracker.RecordHeartbeat(msg.PubKey)
-		})
-		logger.Info().Msg("Heartbeat protocol joined")
-	}
-
-	// Sync protocol.
-	syncer := p2p.NewSyncer(p2pNode)
-	syncer.RegisterHandler(func(fromHeight uint64, max uint32) []*block.Block {
-		var blocks []*block.Block
-		for h := fromHeight; h < fromHeight+uint64(max); h++ {
-			blk, err := ch.GetBlockByHeight(h)
-			if err != nil {
-				break
+			if err := ch.ProcessBlock(&blk); err != nil {
+				if !errors.Is(err, chain.ErrBlockKnown) &&
+					!errors.Is(err, chain.ErrPrevNotFound) &&
+					!errors.Is(err, chain.ErrForkDetected) {
+					p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidBlock, err.Error())
+				}
+				if !errors.Is(err, chain.ErrBlockKnown) {
+					logger.Debug().Err(err).Uint64("height", blk.Header.Height).Msg("Failed to process block")
+				}
+				return
 			}
-			blocks = append(blocks, blk)
+			pool.RemoveConfirmed(blk.Transactions)
+			token.ExtractAndStoreMetadata(tokenStore, &blk)
+
+			if poaEngine != nil {
+				if signer := poaEngine.IdentifySigner(blk.Header); signer != nil {
+					tracker.RecordBlock(signer)
+				}
+			}
+
+			logger.Info().
+				Uint64("height", blk.Header.Height).
+				Str("hash", blk.Hash().String()[:16]+"...").
+				Int("txs", len(blk.Transactions)).
+				Msg("Block received and applied")
+		})
+
+		// Tx handler.
+		p2pNode.SetTxHandler(func(from peer.ID, data []byte) {
+			var t tx.Transaction
+			if err := json.Unmarshal(data, &t); err != nil {
+				logger.Debug().Err(err).Msg("Failed to unmarshal transaction")
+				p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidTx, "unmarshal: "+err.Error())
+				return
+			}
+			fee, err := pool.Add(&t)
+			if err != nil {
+				logger.Debug().Err(err).Msg("Rejected transaction")
+				p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidTx, err.Error())
+				return
+			}
+			logger.Info().
+				Str("tx", t.Hash().String()[:16]+"...").
+				Uint64("fee", fee).
+				Msg("Transaction added to mempool")
+		})
+
+		if err := p2pNode.Start(); err != nil {
+			db.Close()
+			if validatorKey != nil {
+				validatorKey.Zero()
+			}
+			return nil, fmt.Errorf("start P2P: %w", err)
 		}
-		return blocks
-	})
-	syncer.RegisterHeightHandler(func() (uint64, string) {
-		return ch.Height(), ch.TipHash().String()
-	})
-	logger.Info().Msg("Chain sync protocol registered")
+
+		logger.Info().
+			Str("id", p2pNode.ID().String()).
+			Int("port", cfg.P2P.Port).
+			Bool("discovery", !cfg.P2P.NoDiscover).
+			Msg("P2P node started")
+
+		// Heartbeat topic.
+		if err := p2pNode.JoinHeartbeat(); err != nil {
+			logger.Warn().Err(err).Msg("Failed to join heartbeat topic")
+		} else {
+			p2pNode.SetHeartbeatHandler(func(msg *p2p.HeartbeatMessage) {
+				if poaEngine != nil && !poaEngine.IsValidator(msg.PubKey) {
+					return
+				}
+				tracker.RecordHeartbeat(msg.PubKey)
+			})
+			logger.Info().Msg("Heartbeat protocol joined")
+		}
+
+		// Sync protocol.
+		syncer = p2p.NewSyncer(p2pNode)
+		syncer.RegisterHandler(func(fromHeight uint64, max uint32) []*block.Block {
+			var blocks []*block.Block
+			for h := fromHeight; h < fromHeight+uint64(max); h++ {
+				blk, err := ch.GetBlockByHeight(h)
+				if err != nil {
+					break
+				}
+				blocks = append(blocks, blk)
+			}
+			return blocks
+		})
+		syncer.RegisterHeightHandler(func() (uint64, string) {
+			return ch.Height(), ch.TipHash().String()
+		})
+		logger.Info().Msg("Chain sync protocol registered")
+	} else {
+		logger.Warn().Msg("P2P disabled by config; node will run offline")
+	}
 
 	// Stake handler.
 	if poa, ok := engine.(*consensus.PoA); ok {
@@ -394,43 +400,57 @@ func New(cfg *config.Config) (*Node, error) {
 	})
 
 	// ── 11. RPC server ──────────────────────────────────────────────
-	rpcAddr := fmt.Sprintf("%s:%d", cfg.RPC.Addr, cfg.RPC.Port)
-	rpcServer := rpc.New(rpcAddr, ch, utxoStore, pool, p2pNode, genesis, engine, cfg.RPC)
-	if err := rpcServer.Start(); err != nil {
-		p2pNode.Stop()
-		db.Close()
-		if validatorKey != nil {
-			validatorKey.Zero()
-		}
-		return nil, fmt.Errorf("start RPC at %s: %w", rpcAddr, err)
-	}
-
-	// Wire token store.
-	rpcServer.SetTokenStore(tokenStore)
-
-	// Wire validator tracker.
-	rpcServer.SetValidatorTracker(tracker)
-
-	// Wire ban manager.
-	rpcServer.SetBanManager(p2pNode.BanManager)
-
-	logger.Info().Str("addr", rpcServer.Addr()).Msg("RPC server started")
-
-	// Wallet RPC.
-	if cfg.Wallet.Enabled {
-		ks, ksErr := wallet.NewKeystore(cfg.KeystoreDir())
-		if ksErr != nil {
-			rpcServer.Stop()
-			p2pNode.Stop()
+	var rpcServer *rpc.Server
+	if cfg.RPC.Enabled {
+		rpcAddr := fmt.Sprintf("%s:%d", cfg.RPC.Addr, cfg.RPC.Port)
+		rpcServer = rpc.New(rpcAddr, ch, utxoStore, pool, p2pNode, genesis, engine, cfg.RPC)
+		if err := rpcServer.Start(); err != nil {
+			if p2pNode != nil {
+				p2pNode.Stop()
+			}
 			db.Close()
 			if validatorKey != nil {
 				validatorKey.Zero()
 			}
-			return nil, fmt.Errorf("create wallet keystore: %w", ksErr)
+			return nil, fmt.Errorf("start RPC at %s: %w", rpcAddr, err)
 		}
-		rpcServer.SetKeystore(ks)
-		rpcServer.SetWalletTxIndex(rpc.NewWalletTxIndex(db))
-		logger.Info().Str("path", cfg.KeystoreDir()).Msg("Wallet RPC enabled")
+
+		// Wire token store.
+		rpcServer.SetTokenStore(tokenStore)
+
+		// Wire validator tracker.
+		rpcServer.SetValidatorTracker(tracker)
+
+		// Wire ban manager.
+		if p2pNode != nil {
+			rpcServer.SetBanManager(p2pNode.BanManager)
+		}
+
+		logger.Info().Str("addr", rpcServer.Addr()).Msg("RPC server started")
+
+		// Wallet RPC.
+		if cfg.Wallet.Enabled {
+			ks, ksErr := wallet.NewKeystore(cfg.KeystoreDir())
+			if ksErr != nil {
+				rpcServer.Stop()
+				if p2pNode != nil {
+					p2pNode.Stop()
+				}
+				db.Close()
+				if validatorKey != nil {
+					validatorKey.Zero()
+				}
+				return nil, fmt.Errorf("create wallet keystore: %w", ksErr)
+			}
+			rpcServer.SetKeystore(ks)
+			rpcServer.SetWalletTxIndex(rpc.NewWalletTxIndex(db))
+			logger.Info().Str("path", cfg.KeystoreDir()).Msg("Wallet RPC enabled")
+		}
+	} else {
+		if cfg.Wallet.Enabled {
+			logger.Warn().Msg("wallet.enabled is true but RPC is disabled; wallet RPC endpoints unavailable")
+		}
+		logger.Warn().Msg("RPC disabled by config")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -471,12 +491,14 @@ func New(cfg *config.Config) (*Node, error) {
 // Start launches background goroutines: startup sync, sync loop, miner, heartbeat.
 func (n *Node) Start() error {
 	// Startup sync.
-	n.runStartupSync()
-	n.wg.Add(1)
-	go func() {
-		defer n.wg.Done()
-		n.runSyncLoop()
-	}()
+	if n.p2pNode != nil && n.syncer != nil {
+		n.runStartupSync()
+		n.wg.Add(1)
+		go func() {
+			defer n.wg.Done()
+			n.runSyncLoop()
+		}()
+	}
 
 	// Mining.
 	if n.cfg.Mining.Enabled {
@@ -553,6 +575,9 @@ func (n *Node) Stop() {
 
 // RPCAddr returns the address the RPC server is listening on.
 func (n *Node) RPCAddr() string {
+	if n.rpcServer == nil {
+		return ""
+	}
 	return n.rpcServer.Addr()
 }
 
@@ -564,6 +589,9 @@ func (n *Node) Height() uint64 {
 // ── Sync ────────────────────────────────────────────────────────────
 
 func (n *Node) runSyncLoop() {
+	if n.p2pNode == nil {
+		return
+	}
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -581,6 +609,9 @@ func (n *Node) runSyncLoop() {
 }
 
 func (n *Node) runStartupSync() {
+	if n.p2pNode == nil || n.syncer == nil {
+		return
+	}
 	peers := n.p2pNode.PeerList()
 	if len(peers) == 0 {
 		n.logger.Info().Msg("No peers for startup sync")
@@ -834,8 +865,10 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 				}
 			}
 
-			if err := n.p2pNode.BroadcastBlock(blk); err != nil {
-				n.logger.Error().Err(err).Msg("Failed to broadcast block")
+			if n.p2pNode != nil {
+				if err := n.p2pNode.BroadcastBlock(blk); err != nil {
+					n.logger.Error().Err(err).Msg("Failed to broadcast block")
+				}
 			}
 
 			n.logger.Info().
@@ -851,6 +884,9 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 // ── Heartbeat ───────────────────────────────────────────────────────
 
 func (n *Node) runHeartbeat(interval time.Duration) {
+	if n.p2pNode == nil {
+		return
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -978,7 +1014,9 @@ func (n *Node) setupSubChains() error {
 		}
 	})
 
-	n.rpcServer.SetSubChainManager(scManager)
+	if n.rpcServer != nil {
+		n.rpcServer.SetSubChainManager(scManager)
+	}
 	n.logger.Info().Msg("Sub-chain system enabled")
 	return nil
 }
@@ -1053,97 +1091,106 @@ func (n *Node) handleSubChainSpawn(chainID types.ChainID, sr *subchain.SpawnResu
 		scPoA = poa
 		scTracker = consensus.NewValidatorTracker(60 * time.Second)
 
-		if err := n.p2pNode.JoinSubChainHeartbeat(idHex); err != nil {
-			scLog.Warn().Err(err).Msg("Failed to join sub-chain heartbeat topic")
+		if n.p2pNode != nil {
+			if err := n.p2pNode.JoinSubChainHeartbeat(idHex); err != nil {
+				scLog.Warn().Err(err).Msg("Failed to join sub-chain heartbeat topic")
+			} else {
+				scPoALocal := scPoA
+				n.p2pNode.SetSubChainHeartbeatHandler(idHex, func(msg *p2p.HeartbeatMessage) {
+					if scPoALocal != nil && !scPoALocal.IsValidator(msg.PubKey) {
+						return
+					}
+					scTracker.RecordHeartbeat(msg.PubKey)
+				})
+				scLog.Info().Msg("Sub-chain heartbeat joined")
+			}
+		}
+
+		if n.rpcServer != nil {
+			n.rpcServer.SetSubChainTracker(idHex, scTracker)
+		}
+	}
+
+	if n.p2pNode != nil && n.syncer != nil {
+		// Join P2P topics.
+		if err := n.p2pNode.JoinSubChain(idHex); err != nil {
+			scLog.Warn().Err(err).Msg("Failed to join sub-chain P2P topics")
 		} else {
-			scPoALocal := scPoA
-			n.p2pNode.SetSubChainHeartbeatHandler(idHex, func(msg *p2p.HeartbeatMessage) {
-				if scPoALocal != nil && !scPoALocal.IsValidator(msg.PubKey) {
-					return
+			scLog.Info().Msg("Joined sub-chain P2P topics")
+		}
+
+		// Sync handlers.
+		n.syncer.RegisterSubChainHandler(idHex, func(from uint64, max uint32) []*block.Block {
+			var blocks []*block.Block
+			for h := from; h < from+uint64(max); h++ {
+				blk, err := sr.Chain.GetBlockByHeight(h)
+				if err != nil {
+					break
 				}
-				scTracker.RecordHeartbeat(msg.PubKey)
-			})
-			scLog.Info().Msg("Sub-chain heartbeat joined")
-		}
+				blocks = append(blocks, blk)
+			}
+			return blocks
+		})
+		n.syncer.RegisterSubChainHeightHandler(idHex, func() (uint64, string) {
+			return sr.Chain.Height(), sr.Chain.TipHash().String()
+		})
 
-		n.rpcServer.SetSubChainTracker(idHex, scTracker)
+		// Block handler with sync trigger.
+		var syncing atomic.Bool
+		n.p2pNode.SetSubChainBlockHandler(idHex, func(from peer.ID, data []byte) {
+			var blk block.Block
+			if err := json.Unmarshal(data, &blk); err != nil {
+				n.p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidBlock, "sc unmarshal: "+err.Error())
+				return
+			}
+			if err := sr.Chain.ProcessBlock(&blk); err != nil {
+				if errors.Is(err, chain.ErrPrevNotFound) && syncing.CompareAndSwap(false, true) {
+					go func() {
+						defer syncing.Store(false)
+						n.runSubChainSync(sr.Chain, sr.Pool, idHex, scLog)
+					}()
+				} else if !errors.Is(err, chain.ErrBlockKnown) &&
+					!errors.Is(err, chain.ErrPrevNotFound) &&
+					!errors.Is(err, chain.ErrForkDetected) {
+					n.p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidBlock, err.Error())
+				}
+				return
+			}
+			sr.Pool.RemoveConfirmed(blk.Transactions)
+
+			if scPoA != nil && scTracker != nil {
+				if signer := scPoA.IdentifySigner(blk.Header); signer != nil {
+					scTracker.RecordBlock(signer)
+				}
+			}
+
+			scLog.Info().
+				Uint64("height", blk.Header.Height).
+				Str("hash", blk.Hash().String()[:16]+"...").
+				Msg("Sub-chain block received")
+		})
+
+		// Tx handler.
+		n.p2pNode.SetSubChainTxHandler(idHex, func(from peer.ID, data []byte) {
+			var t tx.Transaction
+			if err := json.Unmarshal(data, &t); err != nil {
+				n.p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidTx, "sc tx unmarshal: "+err.Error())
+				return
+			}
+			if _, err := sr.Pool.Add(&t); err != nil {
+				n.p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidTx, err.Error())
+				return
+			}
+		})
+
+		// Initial sync.
+		go n.runSubChainSync(sr.Chain, sr.Pool, idHex, scLog)
 	}
-
-	// Join P2P topics.
-	if err := n.p2pNode.JoinSubChain(idHex); err != nil {
-		scLog.Warn().Err(err).Msg("Failed to join sub-chain P2P topics")
-	} else {
-		scLog.Info().Msg("Joined sub-chain P2P topics")
-	}
-
-	// Sync handlers.
-	n.syncer.RegisterSubChainHandler(idHex, func(from uint64, max uint32) []*block.Block {
-		var blocks []*block.Block
-		for h := from; h < from+uint64(max); h++ {
-			blk, err := sr.Chain.GetBlockByHeight(h)
-			if err != nil {
-				break
-			}
-			blocks = append(blocks, blk)
-		}
-		return blocks
-	})
-	n.syncer.RegisterSubChainHeightHandler(idHex, func() (uint64, string) {
-		return sr.Chain.Height(), sr.Chain.TipHash().String()
-	})
-
-	// Block handler with sync trigger.
-	var syncing atomic.Bool
-	n.p2pNode.SetSubChainBlockHandler(idHex, func(from peer.ID, data []byte) {
-		var blk block.Block
-		if err := json.Unmarshal(data, &blk); err != nil {
-			n.p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidBlock, "sc unmarshal: "+err.Error())
-			return
-		}
-		if err := sr.Chain.ProcessBlock(&blk); err != nil {
-			if errors.Is(err, chain.ErrPrevNotFound) && syncing.CompareAndSwap(false, true) {
-				go func() {
-					defer syncing.Store(false)
-					n.runSubChainSync(sr.Chain, sr.Pool, idHex, scLog)
-				}()
-			} else if !errors.Is(err, chain.ErrBlockKnown) &&
-				!errors.Is(err, chain.ErrPrevNotFound) &&
-				!errors.Is(err, chain.ErrForkDetected) {
-				n.p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidBlock, err.Error())
-			}
-			return
-		}
-		sr.Pool.RemoveConfirmed(blk.Transactions)
-
-		if scPoA != nil && scTracker != nil {
-			if signer := scPoA.IdentifySigner(blk.Header); signer != nil {
-				scTracker.RecordBlock(signer)
-			}
-		}
-
-		scLog.Info().
-			Uint64("height", blk.Header.Height).
-			Str("hash", blk.Hash().String()[:16]+"...").
-			Msg("Sub-chain block received")
-	})
-
-	// Tx handler.
-	n.p2pNode.SetSubChainTxHandler(idHex, func(from peer.ID, data []byte) {
-		var t tx.Transaction
-		if err := json.Unmarshal(data, &t); err != nil {
-			n.p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidTx, "sc tx unmarshal: "+err.Error())
-			return
-		}
-		if _, err := sr.Pool.Add(&t); err != nil {
-			n.p2pNode.BanManager.RecordOffense(from, p2p.PenaltyInvalidTx, err.Error())
-			return
-		}
-	})
-
-	// Initial sync.
-	go n.runSubChainSync(sr.Chain, sr.Pool, idHex, scLog)
 
 	// Start PoW miner if listed.
+	if !isPoW(sr.Engine) && mineFilter != nil && mineFilter.ShouldMine(chainID) {
+		scLog.Warn().Msg("subchain.mine includes a PoA chain ID; ignored (PoW only)")
+	}
 	if isPoW(sr.Engine) && mineFilter != nil && mineFilter.ShouldMine(chainID) && scCoinbase != (types.Address{}) {
 		n.startSubChainMiner(chainID, sr, scCoinbase)
 	}
@@ -1166,16 +1213,25 @@ func (n *Node) handleSubChainStop(chainID types.ChainID) {
 	idHex := hex.EncodeToString(chainID[:])
 	n.stopSubChainMiner(chainID)
 	n.stopSubChainHeartbeat(chainID)
-	n.syncer.RemoveSubChainHandler(idHex)
-	n.p2pNode.LeaveSubChainHeartbeat(idHex)
-	n.p2pNode.LeaveSubChain(idHex)
-	n.rpcServer.RemoveSubChainTracker(idHex)
+	if n.syncer != nil {
+		n.syncer.RemoveSubChainHandler(idHex)
+	}
+	if n.p2pNode != nil {
+		n.p2pNode.LeaveSubChainHeartbeat(idHex)
+		n.p2pNode.LeaveSubChain(idHex)
+	}
+	if n.rpcServer != nil {
+		n.rpcServer.RemoveSubChainTracker(idHex)
+	}
 	n.logger.Info().Str("chain", idHex[:16]+"...").Msg("Left sub-chain P2P topics")
 }
 
 // ── Sub-chain sync ──────────────────────────────────────────────────
 
 func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex string, logger zerolog.Logger) {
+	if n.p2pNode == nil || n.syncer == nil {
+		return
+	}
 	peers := n.p2pNode.PeerList()
 	if len(peers) == 0 {
 		return
@@ -1484,8 +1540,10 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 				}
 			}
 
-			if err := n.p2pNode.BroadcastSubChainBlock(chainIDHex, blk); err != nil {
-				logger.Warn().Err(err).Msg("Failed to broadcast sub-chain block")
+			if n.p2pNode != nil {
+				if err := n.p2pNode.BroadcastSubChainBlock(chainIDHex, blk); err != nil {
+					logger.Warn().Err(err).Msg("Failed to broadcast sub-chain block")
+				}
 			}
 
 			logger.Info().
@@ -1519,8 +1577,10 @@ func (n *Node) runSubChainMiner(ctx context.Context, m *miner.Miner, ch *chain.C
 			}
 			pool.RemoveConfirmed(blk.Transactions)
 
-			if err := n.p2pNode.BroadcastSubChainBlock(chainIDHex, blk); err != nil {
-				logger.Warn().Err(err).Msg("Failed to broadcast sub-chain block")
+			if n.p2pNode != nil {
+				if err := n.p2pNode.BroadcastSubChainBlock(chainIDHex, blk); err != nil {
+					logger.Warn().Err(err).Msg("Failed to broadcast sub-chain block")
+				}
 			}
 
 			logger.Info().
@@ -1581,6 +1641,9 @@ func (n *Node) runSubChainHeartbeat(ctx context.Context, ch *chain.Chain,
 }
 
 func (n *Node) sendSubChainHeartbeat(pubKey []byte, ch *chain.Chain, chainIDHex string, logger zerolog.Logger) {
+	if n.p2pNode == nil {
+		return
+	}
 	ts := time.Now().Unix()
 	height := ch.Height()
 

@@ -574,12 +574,12 @@ Core:
   --config, -c        Config file path
 
 P2P:
+  --p2p               Enable/disable P2P networking (default: true)
   --p2p-port          Listen port (mainnet: 30303, testnet: 30304)
   --seeds             Seed nodes (comma-separated)
   --maxpeers          Max peers (default: 50)
   --nodiscover        Disable mDNS + DHT discovery
   --dht-server        Run DHT in server mode (for seeds/validators)
-  --wallet            Enable wallet RPC endpoints
 
 Mining/Validation:
   --mine              Enable block production
@@ -591,8 +591,15 @@ Sub-chains:
   --mine-subchains    PoW sub-chain IDs to mine (comma-separated hex IDs)
 
 RPC:
+  --rpc               Enable/disable RPC server (default: true)
   --rpc-addr          RPC listen address (default: 127.0.0.1)
   --rpc-port          RPC listen port (mainnet: 8545, testnet: 8645)
+  --rpc-allowed       Allowed client IPs/CIDRs (comma-separated)
+  --rpc-cors          Allowed CORS origins (comma-separated)
+
+Wallet:
+  --wallet            Enable wallet RPC endpoints
+  --wallet-file       Wallet file path
 
 Logging:
   --log-level         debug, info, warn, error (default: info)

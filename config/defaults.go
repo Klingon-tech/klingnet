@@ -23,8 +23,6 @@ func DefaultMainnet() *Config {
 			Addr:       "127.0.0.1",
 			Port:       8545,
 			AllowedIPs: []string{"127.0.0.1"},
-			EnableWS:   false,
-			WSPort:     8546,
 		},
 		Wallet: WalletConfig{
 			Enabled: false,
@@ -49,7 +47,6 @@ func DefaultTestnet() *Config {
 	cfg.Network = Testnet
 	cfg.P2P.Port = 30304
 	cfg.RPC.Port = 8645
-	cfg.RPC.WSPort = 8646
 	return cfg
 }
 

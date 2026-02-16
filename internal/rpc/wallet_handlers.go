@@ -2631,6 +2631,22 @@ func (s *Server) classifyTx(transaction *tx.Transaction, txIdx int, addrSet map[
 			Fee:    formatAmount(safeSub(ourInputSum, totalOutputs(transaction))),
 		}
 
+	case hasRegisterOutput(transaction) && hasOurInputs:
+		// Sub-chain registration tx.
+		var burnAmt uint64
+		for _, out := range transaction.Outputs {
+			if out.Script.Type == types.ScriptTypeRegister {
+				burnAmt += out.Value
+			}
+		}
+		fee := safeSub(ourInputSum, totalOutputs(transaction))
+		entry = &TxHistoryEntry{
+			TxHash: txHash,
+			Type:   "register",
+			Amount: formatAmount(burnAmt),
+			Fee:    formatAmount(fee),
+		}
+
 	case hasMintOutput(transaction) && hasOurInputs:
 		// Mint tx — also capture the minted token details.
 		fee := safeSub(ourInputSum, totalOutputs(transaction))
@@ -2805,6 +2821,15 @@ func hasStakeInput(t *tx.Transaction, s *Server) bool {
 func hasMintOutput(t *tx.Transaction) bool {
 	for _, out := range t.Outputs {
 		if out.Script.Type == types.ScriptTypeMint {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRegisterOutput(t *tx.Transaction) bool {
+	for _, out := range t.Outputs {
+		if out.Script.Type == types.ScriptTypeRegister {
 			return true
 		}
 	}

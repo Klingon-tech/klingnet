@@ -89,8 +89,6 @@ type RPCConfig struct {
 	Port        int      `conf:"rpc.port"`
 	AllowedIPs  []string `conf:"rpc.allowed"`
 	CORSOrigins []string `conf:"rpc.cors"` // Allowed CORS origins ("*" = all).
-	EnableWS    bool     `conf:"rpc.ws"`
-	WSPort      int      `conf:"rpc.wsport"`
 }
 
 // WalletConfig holds wallet settings.
@@ -182,4 +180,3 @@ func (c *Config) SubChainsDir() string {
 func (c *Config) ConfigFile() string {
 	return filepath.Join(c.DataDir, "klingnet.conf")
 }
-

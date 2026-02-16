@@ -25,7 +25,8 @@ function typeBadge(type: string): React.ReactNode {
       return <Badge variant="destructive">{type}</Badge>;
     case 'staked':
     case 'unstaked':
-      return <Badge variant="secondary">{type}</Badge>;
+    case 'register':
+      return <Badge variant="secondary">{type === 'register' ? 'sub-chain' : type}</Badge>;
     case 'mint':
       return (
         <Badge variant="secondary" className="bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300">
@@ -62,6 +63,7 @@ function amountDisplay(entry: TxHistoryEntry): { text: string; className: string
       return { text: `+${trimmed}`, className: 'text-green-600 dark:text-green-400' };
     case 'sent':
     case 'staked':
+    case 'register':
       return { text: `-${trimmed}`, className: 'text-red-600 dark:text-red-400' };
     default:
       return { text: trimmed, className: '' };
