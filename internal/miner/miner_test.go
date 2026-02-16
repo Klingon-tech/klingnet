@@ -62,12 +62,14 @@ func TestBuildCoinbase_Validate(t *testing.T) {
 // --- mockChainState ---
 
 type mockChainState struct {
-	height  uint64
-	tipHash types.Hash
+	height       uint64
+	tipHash      types.Hash
+	tipTimestamp uint64
 }
 
-func (m *mockChainState) Height() uint64      { return m.height }
-func (m *mockChainState) TipHash() types.Hash { return m.tipHash }
+func (m *mockChainState) Height() uint64       { return m.height }
+func (m *mockChainState) TipHash() types.Hash  { return m.tipHash }
+func (m *mockChainState) TipTimestamp() uint64  { return m.tipTimestamp }
 
 // --- mockMempool ---
 
@@ -337,6 +339,26 @@ func TestMiner_ProduceBlockAt_UsesGivenTimestamp(t *testing.T) {
 
 	if blk.Header.Timestamp != ts {
 		t.Errorf("timestamp = %d, want %d", blk.Header.Timestamp, ts)
+	}
+}
+
+func TestMiner_ProduceBlockAt_MonotonicTimestamp(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+	poa, _ := consensus.NewPoA([][]byte{key.PublicKey()}, 3)
+	poa.SetSigner(key)
+
+	addr := crypto.AddressFromPubKey(key.PublicKey())
+	chain := &mockChainState{height: 5, tipHash: types.Hash{0x11}, tipTimestamp: 1700000100}
+	m := New(chain, poa, nil, addr, 1000, 0, nil)
+
+	// Timestamp before parent → should be bumped to parentTimestamp+1.
+	blk, err := m.ProduceBlockAt(1700000050)
+	if err != nil {
+		t.Fatalf("ProduceBlockAt: %v", err)
+	}
+
+	if blk.Header.Timestamp != 1700000101 {
+		t.Errorf("timestamp = %d, want %d (parent+1)", blk.Header.Timestamp, uint64(1700000101))
 	}
 }
 
