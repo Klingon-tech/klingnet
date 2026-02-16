@@ -32,12 +32,28 @@ function typeBadge(type: string): React.ReactNode {
           {type}
         </Badge>
       );
+    case 'token_received':
+      return (
+        <Badge variant="secondary" className="bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">
+          {type}
+        </Badge>
+      );
+    case 'token_sent':
+      return <Badge variant="destructive">{type}</Badge>;
     default:
       return <Badge variant="outline">{type}</Badge>;
   }
 }
 
 function amountDisplay(entry: TxHistoryEntry): { text: string; className: string } {
+  if ((entry.type === 'token_received' || entry.type === 'token_sent') && entry.token_amount) {
+    const sign = entry.type === 'token_received' ? '+' : '-';
+    const cls = entry.type === 'token_received'
+      ? 'text-green-600 dark:text-green-400'
+      : 'text-red-600 dark:text-red-400'
+    return { text: `${sign}${entry.token_amount}`, className: cls };
+  }
+
   const trimmed = trimAmount(entry.amount);
   switch (entry.type) {
     case 'received':

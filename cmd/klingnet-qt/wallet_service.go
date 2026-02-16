@@ -611,6 +611,9 @@ type TxHistoryEntry struct {
 	To        string `json:"to,omitempty"`
 	From      string `json:"from,omitempty"`
 	Confirmed bool   `json:"confirmed"`
+	TokenID   string `json:"token_id,omitempty"`
+	// Raw token units as decimal string to avoid JS number precision issues.
+	TokenAmount string `json:"token_amount,omitempty"`
 }
 
 // TxHistoryResult is returned by GetTransactionHistory.
@@ -643,6 +646,13 @@ func (w *WalletService) GetTransactionHistory(name, password string, limit, offs
 			To:        e.To,
 			From:      e.From,
 			Confirmed: e.Confirmed,
+			TokenID:   e.TokenID,
+			TokenAmount: func() string {
+				if e.TokenAmount == 0 {
+					return ""
+				}
+				return strconv.FormatUint(e.TokenAmount, 10)
+			}(),
 		}
 	}
 	return &TxHistoryResult{

@@ -293,6 +293,8 @@ export interface TxHistoryEntry {
   to?: string;
   from?: string;
   confirmed: boolean;
+  token_id?: string;
+  token_amount?: string;
 }
 
 export interface TxHistoryResult {

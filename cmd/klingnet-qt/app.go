@@ -3,17 +3,18 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 
 	"github.com/Klingon-tech/klingnet-chain/config"
+	"github.com/Klingon-tech/klingnet-chain/internal/node"
 	"github.com/Klingon-tech/klingnet-chain/internal/rpcclient"
 )
 
 // qtSettings is the persistent configuration written to qt-settings.json.
 type qtSettings struct {
-	RPCEndpoint   string                   `json:"rpc_endpoint"`
 	DataDir       string                   `json:"data_dir"`
 	Network       string                   `json:"network"`
 	ActiveWallet  string                   `json:"active_wallet"`
@@ -31,6 +32,10 @@ type App struct {
 	// knownAccounts caches wallet addresses so balance works without unlock.
 	mu            sync.RWMutex
 	knownAccounts map[string][]AccountInfo
+
+	// Embedded node.
+	embeddedNode *node.Node
+	startupErr   error // non-nil if the embedded node failed to start
 
 	wallet   *WalletService
 	chain    *ChainService
@@ -58,9 +63,36 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+
+	// Load config from conf file (no CLI flags).
+	network := config.NetworkType(a.networkName)
+	cfg, err := config.LoadFromFile(a.dataDir, network)
+	if err != nil {
+		a.startupErr = fmt.Errorf("load config: %w", err)
+		return
+	}
+	cfg.Wallet.Enabled = true // Always enable wallet in Qt.
+
+	// Start embedded node.
+	n, err := node.New(cfg)
+	if err != nil {
+		a.startupErr = fmt.Errorf("start node: %w", err)
+		return
+	}
+	if err := n.Start(); err != nil {
+		a.startupErr = fmt.Errorf("start services: %w", err)
+		n.Stop()
+		return
+	}
+	a.embeddedNode = n
+	a.rpcEndpoint = "http://" + n.RPCAddr()
 }
 
-func (a *App) shutdown(_ context.Context) {}
+func (a *App) shutdown(_ context.Context) {
+	if a.embeddedNode != nil {
+		a.embeddedNode.Stop()
+	}
+}
 
 // rpcClient returns a new RPC client for the configured endpoint.
 func (a *App) rpcClient() *rpcclient.Client {
@@ -89,9 +121,7 @@ func (a *App) loadSettings() {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return
 	}
-	if s.RPCEndpoint != "" {
-		a.rpcEndpoint = s.RPCEndpoint
-	}
+	// Silently ignore old rpc_endpoint key from previous versions.
 	if s.DataDir != "" {
 		a.dataDir = s.DataDir
 	}
@@ -113,7 +143,6 @@ func (a *App) saveSettings() {
 	a.mu.RUnlock()
 
 	s := qtSettings{
-		RPCEndpoint:   a.rpcEndpoint,
 		DataDir:       a.dataDir,
 		Network:       a.networkName,
 		ActiveWallet:  a.activeWallet,
@@ -130,23 +159,13 @@ func (a *App) saveSettings() {
 
 // ── Getters / Setters (each setter persists) ─────────────────────────
 
-// GetRPCEndpoint returns the current RPC endpoint.
-func (a *App) GetRPCEndpoint() string {
-	return a.rpcEndpoint
-}
-
-// SetRPCEndpoint updates the RPC endpoint.
-func (a *App) SetRPCEndpoint(endpoint string) {
-	a.rpcEndpoint = endpoint
-	a.saveSettings()
-}
-
 // GetDataDir returns the current data directory.
 func (a *App) GetDataDir() string {
 	return a.dataDir
 }
 
 // SetDataDir updates the data directory.
+// Takes effect on next restart.
 func (a *App) SetDataDir(dir string) {
 	a.dataDir = dir
 	a.saveSettings()
@@ -158,6 +177,7 @@ func (a *App) GetNetwork() string {
 }
 
 // SetNetwork updates the network name.
+// Takes effect on next restart.
 func (a *App) SetNetwork(network string) {
 	a.networkName = network
 	a.saveSettings()
@@ -192,7 +212,7 @@ func (a *App) GetKnownAccounts(walletName string) []AccountInfo {
 	return a.knownAccounts[walletName]
 }
 
-// TestConnection checks if the node is reachable.
+// TestConnection checks if the embedded node is reachable.
 func (a *App) TestConnection() (bool, error) {
 	var result struct {
 		ChainID string `json:"chain_id"`
@@ -201,6 +221,23 @@ func (a *App) TestConnection() (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// GetStartupError returns the startup error message, or empty if OK.
+func (a *App) GetStartupError() string {
+	if a.startupErr != nil {
+		return a.startupErr.Error()
+	}
+	return ""
+}
+
+// GetConfFilePath returns the path to the klingnet.conf file.
+func (a *App) GetConfFilePath() string {
+	cfg := config.Default(config.NetworkType(a.networkName))
+	if a.dataDir != "" {
+		cfg.DataDir = a.dataDir
+	}
+	return cfg.ConfigFile()
 }
 
 func defaultDataDir() string {

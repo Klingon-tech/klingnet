@@ -381,6 +381,26 @@ func Load() (*Config, *Flags, error) {
 	return cfg, flags, nil
 }
 
+// LoadFromFile loads config from defaults + conf file only (no CLI flags).
+// Used by the Qt wallet which has no CLI flags.
+func LoadFromFile(dataDir string, network NetworkType) (*Config, error) {
+	cfg := Default(network)
+	if dataDir != "" {
+		cfg.DataDir = dataDir
+	}
+	if err := EnsureDataDirs(cfg); err != nil {
+		return nil, fmt.Errorf("ensuring data dirs: %w", err)
+	}
+	fileValues, err := LoadFile(cfg.ConfigFile())
+	if err != nil {
+		return nil, fmt.Errorf("loading config file: %w", err)
+	}
+	if err := ApplyFileConfig(cfg, fileValues); err != nil {
+		return nil, fmt.Errorf("applying config: %w", err)
+	}
+	return cfg, nil
+}
+
 // EnsureDataDirs creates the data directory structure and a default config
 // file if they don't already exist. This is idempotent — safe to call on
 // every startup.

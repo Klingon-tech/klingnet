@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -135,6 +136,19 @@ func filterNativeUTXOs(utxos []wallet.UTXO) []wallet.UTXO {
 		}
 	}
 	return native
+}
+
+// hasPendingStakeForPubKey reports whether any mempool tx currently creates
+// a stake output for the given validator pubkey.
+func hasPendingStakeForPubKey(txs []*tx.Transaction, pubKey []byte) bool {
+	for _, transaction := range txs {
+		for _, out := range transaction.Outputs {
+			if out.Script.Type == types.ScriptTypeStake && bytes.Equal(out.Script.Data, pubKey) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // formatAmount converts raw base units to a human-readable decimal string.
@@ -1076,6 +1090,15 @@ func (s *Server) handleWalletStake(req *Request) (interface{}, *Error) {
 		return nil, &Error{Code: CodeInternalError, Message: fmt.Sprintf("derive address key: %v", derErr)}
 	}
 	pubKeyBytes := hdKey.PublicKeyBytes()
+
+	// Block duplicate active/pending stake for this validator pubkey.
+	existingStakes, stakeErr := s.utxos.GetStakes(pubKeyBytes)
+	if stakeErr != nil {
+		return nil, &Error{Code: CodeInternalError, Message: fmt.Sprintf("get existing stakes: %v", stakeErr)}
+	}
+	if len(existingStakes) > 0 || hasPendingStakeForPubKey(s.pool.SelectForBlock(s.pool.Count()), pubKeyBytes) {
+		return nil, &Error{Code: CodeInvalidParams, Message: "validator already has an active or pending stake; unstake before staking again"}
+	}
 
 	// Collect UTXOs from all wallet addresses (external + change).
 	wset, collectErr := s.collectWalletUTXOs(master, params.Name, s.utxos, s.chain.Height())
@@ -2083,6 +2106,15 @@ func (s *Server) handleSubChainStake(req *Request) (interface{}, *Error) {
 		return nil, &Error{Code: CodeInternalError, Message: fmt.Sprintf("derive address key: %v", derErr)}
 	}
 	pubKeyBytes := hdKey.PublicKeyBytes()
+
+	// Block duplicate active/pending stake for this validator pubkey on this sub-chain.
+	existingStakes, stakeErr := sr.UTXOs.GetStakes(pubKeyBytes)
+	if stakeErr != nil {
+		return nil, &Error{Code: CodeInternalError, Message: fmt.Sprintf("get existing stakes: %v", stakeErr)}
+	}
+	if len(existingStakes) > 0 || hasPendingStakeForPubKey(sr.Pool.SelectForBlock(sr.Pool.Count()), pubKeyBytes) {
+		return nil, &Error{Code: CodeInvalidParams, Message: "validator already has an active or pending stake on this sub-chain; unstake before staking again"}
+	}
 
 	// Collect UTXOs from all wallet addresses on the sub-chain's UTXO store.
 	wset, collectErr := s.collectWalletUTXOs(master, params.Name, sr.UTXOs, sr.Chain.Height())

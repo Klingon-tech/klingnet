@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useChainInfo } from '../../hooks/useChain';
 import { useWallet } from '../../context/WalletContext';
 import { trimAmount } from '../../utils/format';
@@ -28,9 +28,22 @@ export default function Header({ title }: HeaderProps) {
   const [showUnlock, setShowUnlock] = useState(false);
   const [pw, setPw] = useState('');
   const [unlockError, setUnlockError] = useState('');
+  const [startupErr, setStartupErr] = useState('');
 
-  const statusClass = error ? 'bg-destructive' : chain ? 'bg-primary' : 'bg-yellow-500';
-  const statusText = error ? 'Disconnected' : chain ? `Height: ${chain.height}` : 'Connecting...';
+  useEffect(() => {
+    (async () => {
+      try {
+        const mod = await import('../../../wailsjs/go/main/App');
+        const err = await mod.GetStartupError();
+        if (err) setStartupErr(err);
+      } catch {
+        // ignore
+      }
+    })();
+  }, []);
+
+  const statusClass = startupErr ? 'bg-destructive' : error ? 'bg-destructive' : chain ? 'bg-primary' : 'bg-yellow-500';
+  const statusText = startupErr ? 'Node Error' : error ? 'Disconnected' : chain ? `Height: ${chain.height}` : 'Connecting...';
 
   const handleUnlock = async () => {
     if (!pw) return;

@@ -4,7 +4,6 @@ import (
 	"embed"
 	"log"
 
-	"github.com/Klingon-tech/klingnet-chain/pkg/types"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -14,11 +13,7 @@ import (
 var assets embed.FS
 
 func main() {
-	// Default to mainnet prefix. QT connects to a node via RPC so it
-	// inherits the network from the node. For display purposes, mainnet
-	// is the default; users can set testnet via SetRPCEndpoint flow later.
-	types.SetAddressHRP(types.MainnetHRP)
-
+	// HRP is now set inside node.New() based on the config network.
 	app := NewApp()
 
 	if err := wails.Run(&options.App{
