@@ -21,6 +21,7 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
@@ -459,6 +460,8 @@ func (n *Node) connectSeedsOnce() bool {
 			logger.Warn().Str("addr", addr).Err(err).Msg("Bad seed address")
 			continue
 		}
+		alreadyConnected := n.host.Network().Connectedness(info.ID) == network.Connected
+
 		ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
 		err = n.host.Connect(ctx, *info)
 		cancel()
@@ -466,8 +469,10 @@ func (n *Node) connectSeedsOnce() bool {
 			logger.Warn().Str("peer", info.ID.String()[:16]).Err(err).Msg("Seed connect failed")
 		} else {
 			n.addPeer(info.ID)
-			logger.Info().Str("peer", info.ID.String()[:16]).Msg("Seed connected")
-			connected = true
+			if !alreadyConnected {
+				logger.Info().Str("peer", info.ID.String()[:16]).Msg("Seed connected")
+				connected = true
+			}
 		}
 	}
 	return connected
