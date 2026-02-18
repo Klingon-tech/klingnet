@@ -1,4 +1,5 @@
 .PHONY: build build-all build-qt test clean fmt vet lint release \
+	build-qt-linux build-qt-darwin build-qt-macos-universal \
 	build-qt-windows build-qt-windows-native build-qt-windows-docker build-qt-windows-image
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -112,9 +113,23 @@ build-qt-linux:
 	cp cmd/klingnet-qt/build/bin/klingnet-qt $(DIST)/linux-$(shell go env GOARCH)/klingnet-qt
 
 build-qt-darwin:
+	@if [ "$$(uname -s)" != "Darwin" ]; then \
+		echo "build-qt-darwin must run on macOS host/runner."; \
+		exit 1; \
+	fi
 	cd cmd/klingnet-qt && $(HOME)/go/bin/wails build
 	@mkdir -p $(DIST)/darwin-$(shell go env GOARCH)
-	cp cmd/klingnet-qt/build/bin/klingnet-qt $(DIST)/darwin-$(shell go env GOARCH)/klingnet-qt
+	cp -R cmd/klingnet-qt/build/bin/klingnet-qt.app $(DIST)/darwin-$(shell go env GOARCH)/klingnet-qt.app
+
+# macOS universal app bundle (arm64 + amd64) - run on macOS host/runner.
+build-qt-macos-universal:
+	@if [ "$$(uname -s)" != "Darwin" ]; then \
+		echo "build-qt-macos-universal must run on macOS host/runner."; \
+		exit 1; \
+	fi
+	cd cmd/klingnet-qt && $(HOME)/go/bin/wails build -platform darwin/universal
+	@mkdir -p $(DIST)/darwin-universal
+	cp -R cmd/klingnet-qt/build/bin/klingnet-qt.app $(DIST)/darwin-universal/klingnet-qt.app
 
 # Native Windows build target (run on Windows host with Wails installed)
 build-qt-windows-native:

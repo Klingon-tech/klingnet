@@ -112,7 +112,7 @@ Use this to connect other nodes:
   --seeds "/ip4/<FIRST_NODE_IP>/tcp/30303/p2p/12D3KooW..."
 ```
 
-To add more validators later, stake 2,000 KGX from any node:
+To add more validators later, stake 2,000 KGX (mainnet) from any node:
 
 ```bash
 ./klingnet-cli --network mainnet stake create \
@@ -138,13 +138,12 @@ RPC binds to `127.0.0.1` by default (localhost only).
 ```
 ~/.klingnet/
   klingnet.conf              # Node configuration
+  qt-settings.json           # Qt GUI settings (if using klingnet-qt)
   logs/                      # Log files
   mainnet/
-    blocks/                  # Block storage (BadgerDB)
-    utxo/                    # UTXO set
-    keystore/                # Encrypted wallet files
-    wallet/                  # Wallet metadata
-    subchains/               # Sub-chain data
+    chain/                   # Single BadgerDB (blocks, UTXOs, tx index, state)
+    keystore/                # Encrypted wallet files (.wallet)
+    subchains/               # Sub-chain registry
 ```
 
 ---

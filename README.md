@@ -16,7 +16,7 @@ A UTXO-based blockchain written in Go with flat sub-chain architecture, Schnorr 
 | Storage | Done | BadgerDB + in-memory + PrefixDB backend, UTXO store with address index |
 | Transactions | Done | Builder, structural + UTXO-aware validation, fee calculation |
 | Blocks | Done | Header, merkle tree, structural validation |
-| Consensus | Done | PoA with validator signatures + PoW (BLAKE3 hash-target), deterministic random validator selection |
+| Consensus | Done | PoA with Aura-style time-slot election + Clique-style weighted difficulty, PoW (BLAKE3 hash-target) |
 | Chain state | Done | Genesis init, block processing, block store, tip tracking, reorg, coinbase maturity (20 blocks), unstake cooldown (20 blocks) |
 | Token system | Done | Mint/transfer/burn, conservation rule, metadata store, creation fee (50 KGX), validated in chain + mempool |
 | Mempool | Done | UTXO validation on entry, conflict detection, fee-rate ordering, min fee, coinbase maturity, token validation |
@@ -27,7 +27,7 @@ A UTXO-based blockchain written in Go with flat sub-chain architecture, Schnorr 
 | Config system | Done | Genesis rules, node config, CLI flags, config file |
 | Validator staking | Done | Lock coins to ScriptTypeStake UTXO, auto-register, unstake with cooldown, validator removal |
 | Address format | Done | Bech32 encoding: `kgx1...` (mainnet), `tkgx1...` (testnet), with checksum |
-| RPC server | Done | JSON-RPC 2.0 API — 38 endpoints (chain, UTXO, tx, mempool, net, stake, subchain, wallet, token, validator, mining) |
+| RPC server | Done | JSON-RPC 2.0 API — 44 endpoints (chain, UTXO, tx, mempool, net, stake, subchain, wallet, token, validator, mining) |
 | CLI tool | Done | 18 commands — status, block, tx, send, sendmany, balance, mempool, peers, wallet, validators, stake, subchains |
 | Desktop GUI | Done | Wails v2 + React TypeScript, 14 pages, connects to klingnetd via RPC |
 | RPC client | Done | Reusable JSON-RPC 2.0 client library |
@@ -260,6 +260,7 @@ curl -s -X POST http://127.0.0.1:8645 \
 | `mempool_getContent` | none | List of pending tx hashes |
 | `net_getPeerInfo` | none | Connected peers |
 | `net_getNodeInfo` | none | Node ID and listen addresses |
+| `net_getBanList` | none | List of banned peer IDs |
 | `stake_getInfo` | `{pubkey}` | Stake details for a validator pubkey |
 | `stake_getValidators` | none | List all validators with genesis/stake status |
 | `subchain_list` | none | List all registered sub-chains |
@@ -282,6 +283,8 @@ curl -s -X POST http://127.0.0.1:8645 \
 | `wallet_rescan` | `{name, password, from_height?, derive_limit?, chain_id?}` | Re-derive/scans wallet addresses to recover funds |
 | `subchain_getBalance` | `{chain_id, address}` | Balance on a sub-chain |
 | `subchain_send` | `{chain_id, name, password, to, amount}` | Send on a sub-chain |
+| `subchain_stake` | `{chain_id, name, password, amount}` | Stake on a PoA sub-chain to become validator |
+| `subchain_unstake` | `{chain_id, name, password}` | Unstake from a PoA sub-chain |
 | `token_getInfo` | `{token_id}` | Token metadata |
 | `token_getBalance` | `{address}` | Token balances for address |
 | `token_list` | none | List all tokens |
@@ -409,7 +412,7 @@ All on-chain values are stored in base units. 1 coin = 10^12 base units.
 | Max supply | 2,000,000 KGX | Fixed cap |
 | Block reward | 0.02 KGX | Paid to validator (coinbase) |
 | Min tx fee | 0.000001 KGX | Protocol-enforced minimum |
-| Validator stake | 2,000 KGX (mainnet) | Min stake to become validator |
+| Validator stake | 2,000 KGX (mainnet), 1,000 KGX (testnet) | Min stake to become validator |
 | Sub-chain burn | 1,000 KGX | Burn to register a sub-chain |
 | Token creation fee | 50 KGX | Min fee for mint transactions |
 | Coinbase maturity | 20 blocks | Coinbase outputs locked for 20 confirmations |
@@ -452,12 +455,15 @@ This is the most important architectural distinction.
 - Validators listed by public key in genesis
 - Each block sealed with the validator's Schnorr signature
 - 3-second target block time
-- Validator staking: lock 2,000 KGX to `ScriptTypeStake` UTXO to become a validator
+- Validator staking: lock 2,000 KGX (mainnet) / 1,000 KGX (testnet) to `ScriptTypeStake` UTXO to become a validator
 - Unstaking: spend all stake UTXOs, returned coins locked for 20 blocks (cooldown), validator removed from set
 - Genesis validators are always trusted (no stake required, cannot be removed)
-- Deterministic random validator selection: `BLAKE3(prevHash || height)` seeds selection
-- Selected validator produces immediately; non-selected wait 2x block time (grace period)
-- Any active staker can produce (chain never stalls if selected validator is offline)
+- **Aura-style time-slot election:** `validator = validators[timestamp / blockTime % N]`. Selection depends only on wall clock, not chain tip — nodes with synced clocks always agree on who's in-turn regardless of chain state
+- **Clique-style weighted difficulty:** in-turn blocks have `Difficulty=2`, out-of-turn (backup) blocks have `Difficulty=1`. Fork choice uses cumulative difficulty so in-turn chains always win
+- Validators are sorted by public key bytes for canonical ordering across restarts
+- **Backup production:** if the in-turn validator is offline, backups produce after a staggered delay proportional to their distance from the in-turn slot (`dist * blockTime / 2`). Chain never stalls
+- **Slot-aligned mining:** production loops snap to slot boundaries so all nodes with synced clocks attempt at the same wall-clock instant
+- Monotonic timestamps: block timestamp must be strictly after parent timestamp
 
 **Sub-chains: Configurable (PoA or PoW)**
 - PoW uses BLAKE3 hash-target: `BLAKE3(header) <= MaxUint256 / Difficulty`
@@ -500,6 +506,16 @@ Anyone can create a sub-chain by burning 1,000 KGX on the root chain. The sub-ch
 4. The 1,000 KGX is burned (unspendable `ScriptTypeRegister` output)
 
 **Dynamic Validators (PoA):** PoA sub-chains can enable dynamic validator staking by setting `validator_stake` > 0 in the registration config. When enabled, anyone can lock sub-chain coins in `ScriptTypeStake` UTXOs to join as a validator. The original genesis validators are always trusted. When a staker fully withdraws, they are removed from the validator set. On node restart, staked validators are automatically recovered from the UTXO store.
+
+**Sub-chain Mining:**
+
+| Consensus | How to mine | Config |
+|-----------|-------------|--------|
+| **PoA** | Automatic. If the node has `--mine` + `--validator-key` set and the key is an authorized validator on the sub-chain, the node produces blocks on all synced PoA sub-chains automatically. No additional flag needed. | `--mine --validator-key=<path>` |
+| **PoW** | Opt-in per chain. Specify which PoW sub-chains to mine. Max 8 concurrent PoW miners. | `--mine-subchains=<hex_id1>,<hex_id2>` |
+| **PoW (external)** | Use `mining_getBlockTemplate` / `mining_submitBlock` RPC for GPU/ASIC miners. | No flags needed, just RPC access |
+
+Sub-chains must also be synced to mine them. Use `--sync-subchains=all` or `--sync-subchains=<hex_id1>,<hex_id2>` to control which sub-chains are spawned. Default is `none` (register only, don't spawn).
 
 **Persistence:** Sub-chain registry is persisted to the parent DB. On node restart, all previously registered sub-chains are re-spawned automatically.
 
@@ -587,8 +603,9 @@ Mining/Validation:
   --validator-key     Path to validator private key file
 
 Sub-chains:
-  --sync-subchains    Which sub-chains to sync (all/none/comma-separated IDs)
-  --mine-subchains    PoW sub-chain IDs to mine (comma-separated hex IDs)
+  --sync-subchains    Which sub-chains to sync (all/none/comma-separated hex IDs, default: none)
+  --mine-subchains    PoW sub-chain IDs to mine (comma-separated hex IDs, max 8)
+                      Note: PoA sub-chains mine automatically when --mine + --validator-key are set
 
 RPC:
   --rpc               Enable/disable RPC server (default: true)
@@ -599,7 +616,7 @@ RPC:
 
 Wallet:
   --wallet            Enable wallet RPC endpoints
-  --wallet-file       Wallet file path
+  --wallet-file       Wallet file path (unused — keystore is derived from datadir)
 
 Logging:
   --log-level         debug, info, warn, error (default: info)
@@ -791,7 +808,7 @@ go test -run TestMiner_ProduceBlock ./internal/miner/
 ## Roadmap
 
 - [x] Wire `klingnetd` daemon (BadgerDB, chain, mempool, P2P, block production)
-- [x] RPC server (JSON-RPC API — 38 endpoints for chain, UTXO, tx, mempool, net, stake, subchain, wallet, token)
+- [x] RPC server (JSON-RPC API — 44 endpoints for chain, UTXO, tx, mempool, net, stake, subchain, wallet, token, validator, mining)
 - [x] CLI tool (`klingnet-cli` — 17 commands, wallet management, staking, transaction sending, sub-chains)
 - [x] Desktop GUI (`klingnet-qt` — Wails v2 + React, 14 pages)
 - [x] Validator staking + unstaking (lock/unlock coins, auto-register/remove validators, 20-block cooldown)
