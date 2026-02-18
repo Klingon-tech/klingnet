@@ -18,6 +18,7 @@ type qtSettings struct {
 	DataDir       string                   `json:"data_dir"`
 	Network       string                   `json:"network"`
 	ActiveWallet  string                   `json:"active_wallet"`
+	Notifications bool                     `json:"notifications"`
 	KnownAccounts map[string][]AccountInfo `json:"known_accounts,omitempty"`
 }
 
@@ -28,6 +29,7 @@ type App struct {
 	dataDir      string
 	networkName  string // "mainnet" or "testnet"
 	activeWallet string // currently selected wallet name
+	notify       bool
 
 	// knownAccounts caches wallet addresses so balance works without unlock.
 	mu            sync.RWMutex
@@ -50,6 +52,7 @@ func NewApp() *App {
 		rpcEndpoint:   "http://127.0.0.1:8545",
 		dataDir:       defaultDataDir(),
 		networkName:   "mainnet",
+		notify:        true,
 		knownAccounts: make(map[string][]AccountInfo),
 	}
 	app.wallet = &WalletService{app: app}
@@ -129,6 +132,7 @@ func (a *App) loadSettings() {
 		a.networkName = s.Network
 	}
 	a.activeWallet = s.ActiveWallet
+	a.notify = s.Notifications || !hasNotificationsKey(data)
 	if s.KnownAccounts != nil {
 		a.knownAccounts = s.KnownAccounts
 	}
@@ -146,6 +150,7 @@ func (a *App) saveSettings() {
 		DataDir:       a.dataDir,
 		Network:       a.networkName,
 		ActiveWallet:  a.activeWallet,
+		Notifications: a.notify,
 		KnownAccounts: accts,
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
@@ -192,6 +197,28 @@ func (a *App) GetActiveWallet() string {
 func (a *App) SetActiveWallet(name string) {
 	a.activeWallet = name
 	a.saveSettings()
+}
+
+// GetNotificationsEnabled returns whether desktop transaction notifications are enabled.
+func (a *App) GetNotificationsEnabled() bool {
+	return a.notify
+}
+
+// SetNotificationsEnabled enables/disables desktop transaction notifications.
+func (a *App) SetNotificationsEnabled(enabled bool) {
+	a.notify = enabled
+	a.saveSettings()
+}
+
+// SendNotification sends an OS desktop notification.
+// The browser Notification API is not available inside Wails' WebView,
+// so the frontend calls this Go method instead.
+// Platform-specific implementation is in notify_*.go files.
+func (a *App) SendNotification(title, body string) {
+	if !a.notify {
+		return
+	}
+	sendOSNotification(title, body)
 }
 
 // ── Known accounts cache ─────────────────────────────────────────────
@@ -242,4 +269,14 @@ func (a *App) GetConfFilePath() string {
 
 func defaultDataDir() string {
 	return config.DefaultDataDir()
+}
+
+// hasNotificationsKey detects if "notifications" exists in settings JSON.
+func hasNotificationsKey(data []byte) bool {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	_, ok := raw["notifications"]
+	return ok
 }

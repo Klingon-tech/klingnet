@@ -11,6 +11,7 @@ export default function Settings() {
   const { refreshWallets, lock } = useWallet();
   const [dataDir, setDataDir] = useState('');
   const [network, setNetwork] = useState('mainnet');
+  const [notifications, setNotifications] = useState(true);
   const [confFilePath, setConfFilePath] = useState('');
   const [startupError, setStartupError] = useState('');
   const [saved, setSaved] = useState(false);
@@ -21,6 +22,7 @@ export default function Settings() {
         const mod = await import('../../../wailsjs/go/main/App');
         setDataDir(await mod.GetDataDir());
         setNetwork(await mod.GetNetwork());
+        setNotifications(await mod.GetNotificationsEnabled());
         setConfFilePath(await mod.GetConfFilePath());
         const err = await mod.GetStartupError();
         if (err) setStartupError(err);
@@ -35,6 +37,7 @@ export default function Settings() {
       const mod = await import('../../../wailsjs/go/main/App');
       await mod.SetDataDir(dataDir);
       await mod.SetNetwork(network);
+      await mod.SetNotificationsEnabled(notifications);
       // Reload wallet list with updated network.
       lock();
       await refreshWallets();
@@ -80,6 +83,19 @@ export default function Settings() {
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">Restart required after changing.</p>
+          </div>
+          <div className="space-y-2">
+            <Label>Desktop Notifications</Label>
+            <Select value={notifications ? 'enabled' : 'disabled'} onValueChange={(v) => setNotifications(v === 'enabled')}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select notification mode" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="enabled">Enabled</SelectItem>
+                <SelectItem value="disabled">Disabled</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">Notifies on sent tx and external received tx only.</p>
           </div>
           <div className="space-y-2">
             <Label>Config File</Label>
