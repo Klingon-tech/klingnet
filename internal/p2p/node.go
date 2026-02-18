@@ -36,6 +36,10 @@ const (
 
 	// peerConnectTimeout is the timeout for connecting to a persisted peer.
 	peerConnectTimeout = 5 * time.Second
+
+	// seedRetryTargetPeers is the desired minimum peer count maintained by
+	// periodic seed reconnects (bounded by MaxPeers when set).
+	seedRetryTargetPeers = 16
 )
 
 // Config holds P2P node configuration.
@@ -475,18 +479,36 @@ func (n *Node) connectSeedsLoop() {
 		return
 	}
 	logger := klog.WithComponent("p2p")
+	targetPeers := n.seedRetryTarget()
 
 	for {
 		select {
 		case <-n.ctx.Done():
 			return
 		case <-time.After(10 * time.Second):
-			if n.PeerCount() == 0 {
-				logger.Info().Int("seeds", len(n.config.Seeds)).Msg("No peers, retrying seeds...")
+			if n.PeerCount() < targetPeers {
+				logger.Info().
+					Int("peers", n.PeerCount()).
+					Int("target", targetPeers).
+					Int("seeds", len(n.config.Seeds)).
+					Msg("Peer count below target, retrying seeds...")
 				n.connectSeedsOnce()
 			}
 		}
 	}
+}
+
+// seedRetryTarget returns the desired minimum peer count for seed retries.
+// If MaxPeers is set and below the default target, it is used as the floor.
+func (n *Node) seedRetryTarget() int {
+	target := seedRetryTargetPeers
+	if n.config.MaxPeers > 0 && n.config.MaxPeers < target {
+		target = n.config.MaxPeers
+	}
+	if target < 1 {
+		target = 1
+	}
+	return target
 }
 
 // --- DHT ---
