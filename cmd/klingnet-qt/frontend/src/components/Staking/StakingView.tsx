@@ -118,13 +118,6 @@ export default function StakingView() {
             </DetailRow>
             <DetailRow label="Total Stake">{trimAmount(stakeDetail.total_stake)} KGX</DetailRow>
             <DetailRow label="Min Stake">{trimAmount(stakeDetail.min_stake)} KGX</DetailRow>
-            <DetailRow label="Sufficient">
-              {stakeDetail.sufficient ? (
-                <Badge className="bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">Yes</Badge>
-              ) : (
-                <Badge className="bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300">No</Badge>
-              )}
-            </DetailRow>
             <DetailRow label="Genesis Validator">{stakeDetail.is_genesis ? 'Yes' : 'No'}</DetailRow>
             <div className="pt-3">
               <Button variant="outline" size="sm" onClick={() => { setSelectedPubkey(null); setStakeDetail(null); }}>
