@@ -95,7 +95,7 @@ export default function Settings() {
                 <SelectItem value="disabled">Disabled</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">Notifies on sent tx and external received tx only.</p>
+            <p className="text-xs text-muted-foreground">Notifies on sent, received, and mined block rewards.</p>
           </div>
           <div className="space-y-2">
             <Label>Config File</Label>

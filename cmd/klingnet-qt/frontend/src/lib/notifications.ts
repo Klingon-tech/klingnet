@@ -8,9 +8,9 @@ export function shouldNotifyEntry(entry: TxHistoryEntry, changeAddrs: Set<string
   switch (entry.type) {
     case 'sent':
     case 'token_sent':
+    case 'mined':
       return true;
     case 'received':
-      return !!entry.to && !changeAddrs.has(entry.to);
     case 'token_received':
       return !!entry.to && !changeAddrs.has(entry.to);
     default:
@@ -26,7 +26,10 @@ export async function notifyEntry(entry: TxHistoryEntry): Promise<void> {
   let title = 'Transaction update';
   let body = compactHash(entry.tx_hash);
 
-  if (entry.type === 'sent') {
+  if (entry.type === 'mined') {
+    title = 'Block Reward';
+    body = `Mined ${entry.amount} KGX`;
+  } else if (entry.type === 'sent') {
     title = 'KGX Sent';
     body = `${entry.amount} KGX`;
     if (entry.to) body += ` to ${entry.to.slice(0, 14)}...`;
