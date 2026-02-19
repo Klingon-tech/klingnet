@@ -784,6 +784,30 @@ go run ./cmd/testnet/
 go test -run TestMiner_ProduceBlock ./internal/miner/
 ```
 
+## Troubleshooting
+
+**"Cannot bind to P2P port: address already in use"**
+Another `klingnetd` instance (or another service) is already using the port. Stop the other process or use `--p2p-port` to pick a different port.
+
+**"Database is locked by another process"**
+Only one `klingnetd` instance can open the same data directory at a time. Stop the other instance or use `--datadir` to point to a different directory.
+
+**"Cannot bind to RPC address: address already in use"**
+Another process is already listening on the RPC port. Use `--rpc-port` to pick a different port.
+
+**"Validator key file not found"**
+The path passed to `--validator-key` doesn't exist. Generate a key with `openssl rand -hex 32 > validator.key` or export one with `klingnet-cli wallet export-key`.
+
+**WebKit accessibility warning on Linux**
+```
+(WebKitWebProcess:XXXX): WARNING: Can't connect to a11y bus: Could not connect: Connection refused
+```
+This is not a klingnet error. It comes from the GTK/WebKit accessibility (at-spi2) subsystem on Linux when running `klingnet-qt` without a full desktop session (e.g., in Docker, WSL, or over SSH). To suppress it:
+```bash
+export NO_AT_BRIDGE=1
+```
+Or install the missing service: `sudo apt install at-spi2-core`.
+
 ## Dependencies
 
 | Purpose | Library |

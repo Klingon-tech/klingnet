@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Klingon-tech/klingnet-chain/config"
@@ -166,7 +168,10 @@ func (n *Node) Start() error {
 
 	h, err := libp2p.New(opts...)
 	if err != nil {
-		return fmt.Errorf("create libp2p host: %w", err)
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return fmt.Errorf("cannot bind to P2P port %d: address already in use (is another klingnetd instance running?)", n.config.Port)
+		}
+		return fmt.Errorf("start P2P listener on %s:%d: %w", n.config.ListenAddr, n.config.Port, err)
 	}
 	n.host = h
 
@@ -690,9 +695,13 @@ func loadOrCreateIdentity(dataDir string) (libp2pcrypto.PrivKey, error) {
 	if err == nil {
 		keyBytes, err := hex.DecodeString(string(data))
 		if err != nil {
-			return nil, fmt.Errorf("decode node key: %w", err)
+			return nil, fmt.Errorf("node identity file %s is corrupted (invalid hex): %w", keyPath, err)
 		}
-		return libp2pcrypto.UnmarshalEd25519PrivateKey(keyBytes)
+		priv, err := libp2pcrypto.UnmarshalEd25519PrivateKey(keyBytes)
+		if err != nil {
+			return nil, fmt.Errorf("node identity file %s contains invalid key data: %w", keyPath, err)
+		}
+		return priv, nil
 	}
 
 	// Generate new Ed25519 key.

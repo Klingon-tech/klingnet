@@ -133,7 +133,7 @@ func New(cfg *config.Config) (*Node, error) {
 	}
 	if cfg.Mining.Enabled && validatorKey == nil {
 		db.Close()
-		return nil, fmt.Errorf("mining requires validator-key")
+		return nil, fmt.Errorf("--mine requires --validator-key flag (path to hex-encoded private key file)")
 	}
 
 	// ── 6. Consensus engine ─────────────────────────────────────────

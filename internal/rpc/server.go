@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"syscall"
 	"time"
 
 	"github.com/Klingon-tech/klingnet-chain/config"
@@ -115,7 +117,10 @@ func parseAllowedIPs(entries []string) []*net.IPNet {
 func (s *Server) Start() error {
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
-		return fmt.Errorf("rpc listen: %w", err)
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return fmt.Errorf("cannot bind to RPC address %s: address already in use (is another klingnetd or service running on this port?)", s.addr)
+		}
+		return fmt.Errorf("cannot start RPC server on %s: %w", s.addr, err)
 	}
 	s.ln = ln
 

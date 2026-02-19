@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/dgraph-io/badger/v4"
 )
@@ -18,7 +19,12 @@ func NewBadger(path string) (*BadgerDB, error) {
 
 	db, err := badger.Open(opts)
 	if err != nil {
-		return nil, fmt.Errorf("open badger: %w", err)
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "Cannot acquire directory lock") ||
+			strings.Contains(errMsg, "resource temporarily unavailable") {
+			return nil, fmt.Errorf("database at %s is locked by another process (is another klingnetd instance running?): %w", path, err)
+		}
+		return nil, fmt.Errorf("open database at %s: %w", path, err)
 	}
 	return &BadgerDB{db: db}, nil
 }

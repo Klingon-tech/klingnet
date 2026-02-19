@@ -30,16 +30,30 @@ func loadValidatorKey(path string) (*crypto.PrivateKey, error) {
 	path = expandHome(path)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read key file: %w", err)
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("validator key file not found: %s (use 'klingnet-cli wallet exportKey' to generate one)", path)
+		}
+		if os.IsPermission(err) {
+			return nil, fmt.Errorf("permission denied reading validator key file: %s", path)
+		}
+		return nil, fmt.Errorf("read validator key file %s: %w", path, err)
 	}
 
 	hexStr := strings.TrimSpace(string(data))
-	keyBytes, err := hex.DecodeString(hexStr)
-	if err != nil {
-		return nil, fmt.Errorf("decode hex: %w", err)
+	if len(hexStr) == 0 {
+		return nil, fmt.Errorf("validator key file %s is empty", path)
 	}
 
-	return crypto.PrivateKeyFromBytes(keyBytes)
+	keyBytes, err := hex.DecodeString(hexStr)
+	if err != nil {
+		return nil, fmt.Errorf("validator key file %s contains invalid hex (expected 64-char hex-encoded private key): %w", path, err)
+	}
+
+	pk, err := crypto.PrivateKeyFromBytes(keyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("invalid validator key in %s (expected 32-byte secp256k1 private key): %w", path, err)
+	}
+	return pk, nil
 }
 
 // resolveCoinbase determines the coinbase address from a string or validator key.
@@ -56,7 +70,7 @@ func resolveCoinbase(coinbaseStr string, validatorKey *crypto.PrivateKey) (types
 		return crypto.AddressFromPubKey(validatorKey.PublicKey()), nil
 	}
 
-	return types.Address{}, fmt.Errorf("mining requires coinbase or validator-key")
+	return types.Address{}, fmt.Errorf("--mine requires --coinbase address or --validator-key (to derive coinbase from public key)")
 }
 
 // createEngine builds a consensus engine from the genesis configuration.
