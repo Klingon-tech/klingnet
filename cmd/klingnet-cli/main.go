@@ -886,6 +886,13 @@ func cmdSubChains(client *rpcclient.Client) {
 		if sc.Syncing {
 			fmt.Printf("      Height:     %d\n", sc.Height)
 		}
+		if sc.ConsensusType == "pow" {
+			fmt.Printf("      Difficulty: %d", sc.CurrentDifficulty)
+			if sc.CurrentDifficulty != sc.InitialDifficulty {
+				fmt.Printf(" (initial: %d)", sc.InitialDifficulty)
+			}
+			fmt.Println()
+		}
 		fmt.Printf("      Created at: %d\n", sc.CreatedAt)
 		fmt.Println()
 	}
@@ -933,6 +940,14 @@ func cmdSubChainInfo(client *rpcclient.Client, chainID string) {
 		fmt.Printf("Tip:             %s\n", result.TipHash)
 	} else {
 		fmt.Printf("Syncing:         no (not tracked by this node)\n")
+	}
+	if result.ConsensusType == "pow" {
+		fmt.Printf("Difficulty:      %d (initial: %d)\n", result.CurrentDifficulty, result.InitialDifficulty)
+		if result.DifficultyAdjust > 0 {
+			fmt.Printf("Adjust interval: every %d blocks\n", result.DifficultyAdjust)
+		} else {
+			fmt.Printf("Adjust interval: disabled\n")
+		}
 	}
 	fmt.Printf("Created at:      %d\n", result.CreatedAt)
 	fmt.Printf("Registration Tx: %s\n", result.RegistrationTx)

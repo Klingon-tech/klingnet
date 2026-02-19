@@ -138,13 +138,13 @@ export default function SubChainList() {
             </DetailRow>
             {detail.consensus_type === 'pow' && (
               <>
-                <DetailRow label="Initial Difficulty">{detail.initial_difficulty || '-'}</DetailRow>
-                {(detail.difficulty_adjust ?? 0) > 0 && (
-                  <DetailRow label="Difficulty Adjust">Every {detail.difficulty_adjust} blocks</DetailRow>
-                )}
-                {(detail.current_difficulty ?? 0) > 0 && (
-                  <DetailRow label="Current Difficulty">{detail.current_difficulty}</DetailRow>
-                )}
+                <DetailRow label="Current Difficulty">{detail.current_difficulty ?? detail.initial_difficulty ?? 0}</DetailRow>
+                <DetailRow label="Initial Difficulty">{detail.initial_difficulty ?? 0}</DetailRow>
+                <DetailRow label="Difficulty Adjust">
+                  {(detail.difficulty_adjust ?? 0) > 0
+                    ? `Every ${detail.difficulty_adjust} blocks`
+                    : 'Disabled'}
+                </DetailRow>
               </>
             )}
             <DetailRow label="Syncing">{detail.syncing ? 'Yes' : 'No'}</DetailRow>

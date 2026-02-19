@@ -26,15 +26,18 @@ type SubChainEntry struct {
 
 // SubChainDetail describes a sub-chain with full details.
 type SubChainDetail struct {
-	ChainID        string `json:"chain_id"`
-	Name           string `json:"name"`
-	Symbol         string `json:"symbol"`
-	ConsensusType  string `json:"consensus_type"`
-	Syncing        bool   `json:"syncing"`
-	Height         uint64 `json:"height"`
-	TipHash        string `json:"tip_hash"`
-	CreatedAt      uint64 `json:"created_at"`
-	RegistrationTx string `json:"registration_tx"`
+	ChainID           string `json:"chain_id"`
+	Name              string `json:"name"`
+	Symbol            string `json:"symbol"`
+	ConsensusType     string `json:"consensus_type"`
+	Syncing           bool   `json:"syncing"`
+	Height            uint64 `json:"height"`
+	TipHash           string `json:"tip_hash"`
+	CreatedAt         uint64 `json:"created_at"`
+	RegistrationTx    string `json:"registration_tx"`
+	InitialDifficulty uint64 `json:"initial_difficulty,omitempty"`
+	DifficultyAdjust  int    `json:"difficulty_adjust,omitempty"`
+	CurrentDifficulty uint64 `json:"current_difficulty,omitempty"`
 }
 
 // SubChainListInfo is the sub-chain list result.
@@ -93,15 +96,18 @@ func (s *SubChainService) GetSubChainInfo(chainID string) (*SubChainDetail, erro
 		return nil, err
 	}
 	return &SubChainDetail{
-		ChainID:        result.ChainID,
-		Name:           result.Name,
-		Symbol:         result.Symbol,
-		ConsensusType:  result.ConsensusType,
-		Syncing:        result.Syncing,
-		Height:         result.Height,
-		TipHash:        result.TipHash,
-		CreatedAt:      result.CreatedAt,
-		RegistrationTx: result.RegistrationTx,
+		ChainID:           result.ChainID,
+		Name:              result.Name,
+		Symbol:            result.Symbol,
+		ConsensusType:     result.ConsensusType,
+		Syncing:           result.Syncing,
+		Height:            result.Height,
+		TipHash:           result.TipHash,
+		CreatedAt:         result.CreatedAt,
+		RegistrationTx:    result.RegistrationTx,
+		InitialDifficulty: result.InitialDifficulty,
+		DifficultyAdjust:  result.DifficultyAdjust,
+		CurrentDifficulty: result.CurrentDifficulty,
 	}, nil
 }
 
