@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWallet } from '../../context/WalletContext';
 import { usePolling } from '../../hooks/usePolling';
-import { truncateHash, formatTimestamp } from '../../utils/format';
+import { truncateHash, formatTimestamp, formatDifficulty } from '../../utils/format';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
@@ -138,8 +138,8 @@ export default function SubChainList() {
             </DetailRow>
             {detail.consensus_type === 'pow' && (
               <>
-                <DetailRow label="Current Difficulty">{detail.current_difficulty ?? detail.initial_difficulty ?? 0}</DetailRow>
-                <DetailRow label="Initial Difficulty">{detail.initial_difficulty ?? 0}</DetailRow>
+                <DetailRow label="Current Difficulty">{formatDifficulty(detail.current_difficulty ?? detail.initial_difficulty ?? 0)}</DetailRow>
+                <DetailRow label="Initial Difficulty">{formatDifficulty(detail.initial_difficulty ?? 0)}</DetailRow>
                 <DetailRow label="Difficulty Adjust">
                   {(detail.difficulty_adjust ?? 0) > 0
                     ? `Every ${detail.difficulty_adjust} blocks`

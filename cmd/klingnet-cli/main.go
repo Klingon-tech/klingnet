@@ -887,9 +887,9 @@ func cmdSubChains(client *rpcclient.Client) {
 			fmt.Printf("      Height:     %d\n", sc.Height)
 		}
 		if sc.ConsensusType == "pow" {
-			fmt.Printf("      Difficulty: %d", sc.CurrentDifficulty)
+			fmt.Printf("      Difficulty: %s", formatDifficulty(sc.CurrentDifficulty))
 			if sc.CurrentDifficulty != sc.InitialDifficulty {
-				fmt.Printf(" (initial: %d)", sc.InitialDifficulty)
+				fmt.Printf(" (initial: %s)", formatDifficulty(sc.InitialDifficulty))
 			}
 			fmt.Println()
 		}
@@ -942,7 +942,7 @@ func cmdSubChainInfo(client *rpcclient.Client, chainID string) {
 		fmt.Printf("Syncing:         no (not tracked by this node)\n")
 	}
 	if result.ConsensusType == "pow" {
-		fmt.Printf("Difficulty:      %d (initial: %d)\n", result.CurrentDifficulty, result.InitialDifficulty)
+		fmt.Printf("Difficulty:      %s (initial: %s)\n", formatDifficulty(result.CurrentDifficulty), formatDifficulty(result.InitialDifficulty))
 		if result.DifficultyAdjust > 0 {
 			fmt.Printf("Adjust interval: every %d blocks\n", result.DifficultyAdjust)
 		} else {
@@ -1809,7 +1809,23 @@ func cmdWalletRescan(args []string, rpcURL string) {
 	fmt.Printf("  New addresses:   %d\n", result.AddressesNew)
 }
 
-// ── Amount helpers ──────────────────────────────────────────────────────
+// ── Formatting helpers ─────────────────────────────────────────────────
+
+// formatDifficulty returns a human-readable difficulty string (e.g. "1.05M").
+func formatDifficulty(d uint64) string {
+	switch {
+	case d >= 1_000_000_000_000:
+		return fmt.Sprintf("%.2fT", float64(d)/1_000_000_000_000)
+	case d >= 1_000_000_000:
+		return fmt.Sprintf("%.2fG", float64(d)/1_000_000_000)
+	case d >= 1_000_000:
+		return fmt.Sprintf("%.2fM", float64(d)/1_000_000)
+	case d >= 1_000:
+		return fmt.Sprintf("%.2fK", float64(d)/1_000)
+	default:
+		return fmt.Sprintf("%d", d)
+	}
+}
 
 // formatAmount converts raw units to a human-readable decimal string.
 func formatAmount(units uint64) string {

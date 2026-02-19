@@ -103,3 +103,19 @@ func isPoW(engine consensus.Engine) bool {
 	_, ok := engine.(*consensus.PoW)
 	return ok
 }
+
+// formatDifficulty returns a human-readable difficulty string (e.g. "1.05M").
+func formatDifficulty(d uint64) string {
+	switch {
+	case d >= 1_000_000_000_000:
+		return fmt.Sprintf("%.2fT", float64(d)/1_000_000_000_000)
+	case d >= 1_000_000_000:
+		return fmt.Sprintf("%.2fG", float64(d)/1_000_000_000)
+	case d >= 1_000_000:
+		return fmt.Sprintf("%.2fM", float64(d)/1_000_000)
+	case d >= 1_000:
+		return fmt.Sprintf("%.2fK", float64(d)/1_000)
+	default:
+		return fmt.Sprintf("%d", d)
+	}
+}

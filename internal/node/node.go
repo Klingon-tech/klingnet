@@ -1724,7 +1724,7 @@ func (n *Node) runSubChainMiner(ctx context.Context, m *miner.Miner, ch *chain.C
 		logger.Info().
 			Uint64("height", blk.Header.Height).
 			Str("hash", blk.Hash().String()[:16]+"...").
-			Uint64("difficulty", blk.Header.Difficulty).
+			Str("difficulty", formatDifficulty(blk.Header.Difficulty)).
 			Msg("Sub-chain block mined")
 	}
 }
