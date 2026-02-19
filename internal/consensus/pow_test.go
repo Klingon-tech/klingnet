@@ -1,8 +1,10 @@
 package consensus
 
 import (
+	"context"
 	"math/big"
 	"testing"
+	"time"
 
 	"github.com/Klingon-tech/klingnet-chain/pkg/block"
 	"github.com/Klingon-tech/klingnet-chain/pkg/crypto"
@@ -311,5 +313,177 @@ func TestPoW_VerifyDifficulty(t *testing.T) {
 	header3 := &block.Header{Height: 5, Difficulty: 200}
 	if err := pow.VerifyDifficulty(header3, 200, nil); err != nil {
 		t.Fatalf("VerifyDifficulty(height=5, diff=200) = %v, want nil", err)
+	}
+}
+
+// ── Multi-threaded mining tests ──────────────────────────────────────
+
+func TestPoW_SealParallel(t *testing.T) {
+	pow, err := NewPoW(256, 0, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pow.Threads = 4
+
+	header := &block.Header{
+		Version:    1,
+		PrevHash:   types.Hash{},
+		MerkleRoot: types.Hash{0xDE, 0xAD},
+		Timestamp:  12345,
+		Height:     5,
+		Difficulty: 256,
+	}
+	blk := block.NewBlock(header, nil)
+
+	if err := pow.Seal(blk); err != nil {
+		t.Fatalf("Seal (parallel): %v", err)
+	}
+
+	// Verify the result is valid.
+	if err := pow.VerifyHeader(blk.Header); err != nil {
+		t.Fatalf("VerifyHeader after parallel Seal: %v", err)
+	}
+
+	// Verify the hash is actually below target.
+	hash := crypto.Hash(blk.Header.SigningBytes())
+	hashInt := new(big.Int).SetBytes(hash[:])
+	tgt := target(256)
+	if hashInt.Cmp(tgt) > 0 {
+		t.Fatalf("hash %s > target %s", hashInt, tgt)
+	}
+}
+
+func TestPoW_SealParallel_ModerateDifficulty(t *testing.T) {
+	pow, err := NewPoW(4096, 0, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pow.Threads = 8
+
+	header := &block.Header{
+		Version:    1,
+		PrevHash:   types.Hash{0xAA},
+		MerkleRoot: types.Hash{0xBB},
+		Timestamp:  99999,
+		Height:     100,
+		Difficulty: 4096,
+	}
+	blk := block.NewBlock(header, nil)
+
+	if err := pow.Seal(blk); err != nil {
+		t.Fatalf("Seal (8 threads, diff 4096): %v", err)
+	}
+
+	if err := pow.VerifyHeader(blk.Header); err != nil {
+		t.Fatalf("VerifyHeader: %v", err)
+	}
+}
+
+func TestPoW_SealWithCancel(t *testing.T) {
+	// Very high difficulty so mining won't finish on its own.
+	pow, err := NewPoW(1, 0, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	header := &block.Header{
+		Version:    1,
+		PrevHash:   types.Hash{},
+		MerkleRoot: types.Hash{0xFF},
+		Timestamp:  1000,
+		Height:     1,
+		Difficulty: ^uint64(0) >> 1, // Extremely high difficulty.
+	}
+	blk := block.NewBlock(header, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err = pow.SealWithCancel(ctx, blk)
+	if err == nil {
+		t.Fatal("SealWithCancel should have returned error when context cancelled")
+	}
+	if err != context.DeadlineExceeded {
+		t.Fatalf("SealWithCancel err = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestPoW_SealWithCancel_Parallel(t *testing.T) {
+	pow, err := NewPoW(1, 0, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pow.Threads = 4
+
+	header := &block.Header{
+		Version:    1,
+		PrevHash:   types.Hash{},
+		MerkleRoot: types.Hash{0xFF},
+		Timestamp:  1000,
+		Height:     1,
+		Difficulty: ^uint64(0) >> 1,
+	}
+	blk := block.NewBlock(header, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err = pow.SealWithCancel(ctx, blk)
+	if err == nil {
+		t.Fatal("SealWithCancel (parallel) should have returned error")
+	}
+	if err != context.DeadlineExceeded {
+		t.Fatalf("SealWithCancel (parallel) err = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestPoW_SealSingle_MatchesParallel(t *testing.T) {
+	// Both single and parallel should produce a valid block for the same input.
+	// The nonce may differ, but both must verify.
+	for _, threads := range []int{1, 2, 4} {
+		pow, _ := NewPoW(512, 0, 3)
+		pow.Threads = threads
+
+		header := &block.Header{
+			Version:    1,
+			PrevHash:   types.Hash{0x01},
+			MerkleRoot: types.Hash{0x02},
+			Timestamp:  5000,
+			Height:     10,
+			Difficulty: 512,
+		}
+		blk := block.NewBlock(header, nil)
+
+		if err := pow.Seal(blk); err != nil {
+			t.Fatalf("Seal (threads=%d): %v", threads, err)
+		}
+		if err := pow.VerifyHeader(blk.Header); err != nil {
+			t.Fatalf("VerifyHeader (threads=%d): %v", threads, err)
+		}
+	}
+}
+
+func TestSigningPrefix(t *testing.T) {
+	header := &block.Header{
+		Version:    1,
+		PrevHash:   types.Hash{0xAA, 0xBB},
+		MerkleRoot: types.Hash{0xCC, 0xDD},
+		Timestamp:  12345,
+		Height:     42,
+		Difficulty: 100,
+		Nonce:      999,
+	}
+
+	prefix := signingPrefix(header)
+	full := header.SigningBytes()
+
+	// Prefix should be all of signing bytes except the last 8 bytes (nonce).
+	if len(prefix) != len(full)-8 {
+		t.Fatalf("prefix len = %d, want %d", len(prefix), len(full)-8)
+	}
+	for i := range prefix {
+		if prefix[i] != full[i] {
+			t.Fatalf("prefix[%d] = 0x%02x, want 0x%02x", i, prefix[i], full[i])
+		}
 	}
 }

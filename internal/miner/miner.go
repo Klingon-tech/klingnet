@@ -3,6 +3,7 @@ package miner
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"sort"
@@ -62,7 +63,7 @@ func New(chain ChainState, engine consensus.Engine, pool MempoolSelector,
 // The coinbase output value = block reward + sum of all tx fees.
 // The block is NOT applied to the chain — the caller must call ProcessBlock.
 func (m *Miner) ProduceBlock() (*block.Block, error) {
-	return m.ProduceBlockAt(uint64(time.Now().Unix()))
+	return m.produceBlock(context.Background(), uint64(time.Now().Unix()))
 }
 
 // ProduceBlockAt builds, seals, and returns a new block with the given timestamp.
@@ -70,6 +71,16 @@ func (m *Miner) ProduceBlock() (*block.Block, error) {
 // match a previously computed value (e.g. the same timestamp used for slot election).
 // The timestamp is bumped to at least parentTimestamp+1 to guarantee monotonicity.
 func (m *Miner) ProduceBlockAt(timestamp uint64) (*block.Block, error) {
+	return m.produceBlock(context.Background(), timestamp)
+}
+
+// ProduceBlockCtx builds and seals a block with cancellation support.
+// When the context is cancelled, PoW sealing stops immediately.
+func (m *Miner) ProduceBlockCtx(ctx context.Context) (*block.Block, error) {
+	return m.produceBlock(ctx, uint64(time.Now().Unix()))
+}
+
+func (m *Miner) produceBlock(ctx context.Context, timestamp uint64) (*block.Block, error) {
 	// Ensure monotonic: block timestamp must be strictly after parent.
 	if parentTS := m.chain.TipTimestamp(); timestamp <= parentTS {
 		timestamp = parentTS + 1
@@ -127,8 +138,15 @@ func (m *Miner) ProduceBlockAt(timestamp uint64) (*block.Block, error) {
 
 	blk := block.NewBlock(header, txs)
 
-	if err := m.engine.Seal(blk); err != nil {
-		return nil, fmt.Errorf("seal block: %w", err)
+	// Use cancellable sealing if the engine supports it (PoW).
+	if pow, ok := m.engine.(*consensus.PoW); ok {
+		if err := pow.SealWithCancel(ctx, blk); err != nil {
+			return nil, fmt.Errorf("seal block: %w", err)
+		}
+	} else {
+		if err := m.engine.Seal(blk); err != nil {
+			return nil, fmt.Errorf("seal block: %w", err)
+		}
 	}
 
 	return blk, nil

@@ -1091,25 +1091,31 @@ func (n *Node) handleSubChainSpawn(chainID types.ChainID, sr *subchain.SpawnResu
 	idHex := hex.EncodeToString(chainID[:])
 	scLog := n.logger.With().Str("subchain", idHex[:8]).Logger()
 
-	// Wire PoW DifficultyFn.
-	if pow, ok := sr.Engine.(*consensus.PoW); ok && pow.AdjustInterval > 0 {
-		pow.DifficultyFn = func(height uint64) uint64 {
-			if height <= 1 {
-				return pow.InitialDifficulty
-			}
-			prevBlk, err := sr.Chain.GetBlockByHeight(height - 1)
-			if err != nil {
-				return pow.InitialDifficulty
-			}
-			return pow.ExpectedDifficulty(height, prevBlk.Header.Difficulty, func(h uint64) (uint64, error) {
-				b, e := sr.Chain.GetBlockByHeight(h)
-				if e != nil {
-					return 0, e
-				}
-				return b.Header.Timestamp, nil
-			})
+	// Wire PoW mining threads and DifficultyFn.
+	if pow, ok := sr.Engine.(*consensus.PoW); ok {
+		if n.cfg.Mining.Threads > 1 {
+			pow.Threads = n.cfg.Mining.Threads
+			scLog.Info().Int("threads", pow.Threads).Msg("PoW mining threads configured")
 		}
-		scLog.Info().Int("interval", pow.AdjustInterval).Msg("PoW difficulty adjustment enabled")
+		if pow.AdjustInterval > 0 {
+			pow.DifficultyFn = func(height uint64) uint64 {
+				if height <= 1 {
+					return pow.InitialDifficulty
+				}
+				prevBlk, err := sr.Chain.GetBlockByHeight(height - 1)
+				if err != nil {
+					return pow.InitialDifficulty
+				}
+				return pow.ExpectedDifficulty(height, prevBlk.Header.Difficulty, func(h uint64) (uint64, error) {
+					b, e := sr.Chain.GetBlockByHeight(h)
+					if e != nil {
+						return 0, e
+					}
+					return b.Header.Timestamp, nil
+				})
+			}
+			scLog.Info().Int("interval", pow.AdjustInterval).Msg("PoW difficulty adjustment enabled")
+		}
 	}
 
 	// Wire dynamic validator staking for PoA sub-chains.
@@ -1694,8 +1700,12 @@ func (n *Node) runSubChainMiner(ctx context.Context, m *miner.Miner, ch *chain.C
 			}
 		}
 
-		blk, err := m.ProduceBlock()
+		blk, err := m.ProduceBlockCtx(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				logger.Info().Msg("Sub-chain miner stopped")
+				return
+			}
 			logger.Warn().Err(err).Msg("Block production failed")
 			select {
 			case <-ctx.Done():

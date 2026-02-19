@@ -512,7 +512,7 @@ Anyone can create a sub-chain by burning 1,000 KGX on the root chain. The sub-ch
 | Consensus | How to mine | Config |
 |-----------|-------------|--------|
 | **PoA** | Automatic. If the node has `--mine` + `--validator-key` set and the key is an authorized validator on the sub-chain, the node produces blocks on all synced PoA sub-chains automatically. No additional flag needed. | `--mine --validator-key=<path>` |
-| **PoW** | Opt-in per chain. Specify which PoW sub-chains to mine. Max 8 concurrent PoW miners. | `--mine-subchains=<hex_id1>,<hex_id2>` |
+| **PoW** | Opt-in per chain. Specify which PoW sub-chains to mine. Max 8 concurrent PoW miners. Use `--mine-threads=N` for parallel hashing. | `--mine-subchains=<hex_id1>,<hex_id2>` |
 | **PoW (external)** | Use `mining_getBlockTemplate` / `mining_submitBlock` RPC for GPU/ASIC miners. | No flags needed, just RPC access |
 
 Sub-chains must also be synced to mine them. Use `--sync-subchains=all` or `--sync-subchains=<hex_id1>,<hex_id2>` to control which sub-chains are spawned. Default is `none` (register only, don't spawn).
@@ -601,6 +601,7 @@ Mining/Validation:
   --mine              Enable block production
   --coinbase          Reward address (bech32 or hex)
   --validator-key     Path to validator private key file
+  --mine-threads      Number of PoW mining threads (default: 1)
 
 Sub-chains:
   --sync-subchains    Which sub-chains to sync (all/none/comma-separated hex IDs, default: none)

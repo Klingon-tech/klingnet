@@ -1,9 +1,12 @@
 package consensus
 
 import (
+	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/big"
+	"sync"
 
 	"github.com/Klingon-tech/klingnet-chain/pkg/block"
 	"github.com/Klingon-tech/klingnet-chain/pkg/crypto"
@@ -32,6 +35,11 @@ type PoW struct {
 	// for a new block. Set by the node operator (klingnetd). If nil, Prepare
 	// uses InitialDifficulty.
 	DifficultyFn func(height uint64) uint64
+
+	// Threads controls the number of parallel mining goroutines.
+	// 0 or 1 = single-threaded (default). Each goroutine searches a
+	// strided partition of the nonce space.
+	Threads int
 }
 
 // NewPoW creates a new PoW engine.
@@ -86,7 +94,15 @@ func (p *PoW) Prepare(header *block.Header) error {
 
 // Seal mines the block by iterating the nonce until the header hash meets the target.
 // Uses the difficulty already set in the block header.
+// If Threads > 1, mining runs in parallel goroutines.
 func (p *PoW) Seal(blk *block.Block) error {
+	return p.SealWithCancel(context.Background(), blk)
+}
+
+// SealWithCancel mines the block with cancellation support.
+// When the context is cancelled, mining stops and ctx.Err() is returned.
+// If Threads > 1, mining runs in parallel goroutines with strided nonce partitioning.
+func (p *PoW) SealWithCancel(ctx context.Context, blk *block.Block) error {
 	if blk == nil || blk.Header == nil {
 		return fmt.Errorf("nil block or header")
 	}
@@ -94,19 +110,136 @@ func (p *PoW) Seal(blk *block.Block) error {
 		return ErrZeroDifficulty
 	}
 
+	threads := p.Threads
+	if threads <= 1 {
+		return p.sealSingle(ctx, blk)
+	}
+	return p.sealParallel(ctx, blk, threads)
+}
+
+// signingPrefix returns the header's signing bytes WITHOUT the trailing nonce.
+// This lets each mining goroutine pre-compute the 92-byte prefix once and only
+// append+hash the 8-byte nonce per iteration.
+func signingPrefix(h *block.Header) []byte {
+	buf := make([]byte, 0, 92)
+	buf = binary.LittleEndian.AppendUint32(buf, h.Version)
+	buf = append(buf, h.PrevHash[:]...)
+	buf = append(buf, h.MerkleRoot[:]...)
+	buf = binary.LittleEndian.AppendUint64(buf, h.Timestamp)
+	buf = binary.LittleEndian.AppendUint64(buf, h.Height)
+	buf = binary.LittleEndian.AppendUint64(buf, h.Difficulty)
+	return buf
+}
+
+// sealSingle mines with a single goroutine.
+func (p *PoW) sealSingle(ctx context.Context, blk *block.Block) error {
 	t := target(blk.Header.Difficulty)
+	prefix := signingPrefix(blk.Header)
+	buf := make([]byte, len(prefix)+8)
+	copy(buf, prefix)
+	hashInt := new(big.Int)
 
 	for nonce := uint64(0); ; nonce++ {
-		blk.Header.Nonce = nonce
-		hash := crypto.Hash(blk.Header.SigningBytes())
-		hashInt := new(big.Int).SetBytes(hash[:])
+		// Check cancellation every 65536 iterations.
+		if nonce&0xFFFF == 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
+
+		binary.LittleEndian.PutUint64(buf[len(prefix):], nonce)
+		hash := crypto.Hash(buf)
+		hashInt.SetBytes(hash[:])
 		if hashInt.Cmp(t) <= 0 {
+			blk.Header.Nonce = nonce
 			return nil
 		}
-		// Overflow protection (practically unreachable with reasonable difficulty).
 		if nonce == ^uint64(0) {
 			return fmt.Errorf("nonce space exhausted")
 		}
+	}
+}
+
+// sealParallel mines with multiple goroutines, each searching a strided
+// partition of the nonce space (goroutine i starts at nonce=i, step=threads).
+func (p *PoW) sealParallel(ctx context.Context, blk *block.Block, threads int) error {
+	t := target(blk.Header.Difficulty)
+	prefix := signingPrefix(blk.Header)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type result struct {
+		nonce uint64
+		err   error
+	}
+	found := make(chan result, 1)
+
+	var wg sync.WaitGroup
+	for i := 0; i < threads; i++ {
+		wg.Add(1)
+		startNonce := uint64(i)
+		stride := uint64(threads)
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, len(prefix)+8)
+			copy(buf, prefix)
+			hashInt := new(big.Int)
+
+			for nonce := startNonce; ; nonce += stride {
+				// Check cancellation every ~65536 iterations per goroutine.
+				if (nonce/stride)&0xFFFF == 0 && nonce > 0 {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
+				}
+
+				binary.LittleEndian.PutUint64(buf[len(prefix):], nonce)
+				hash := crypto.Hash(buf)
+				hashInt.SetBytes(hash[:])
+				if hashInt.Cmp(t) <= 0 {
+					select {
+					case found <- result{nonce: nonce}:
+					default:
+					}
+					cancel()
+					return
+				}
+
+				// Overflow: would wrap around past max uint64.
+				if nonce > ^uint64(0)-stride {
+					select {
+					case found <- result{err: fmt.Errorf("nonce space exhausted")}:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+
+	// Wait in background so goroutines are cleaned up.
+	go func() {
+		wg.Wait()
+		close(found)
+	}()
+
+	select {
+	case r, ok := <-found:
+		if !ok {
+			return fmt.Errorf("nonce space exhausted")
+		}
+		if r.err != nil {
+			return r.err
+		}
+		blk.Header.Nonce = r.nonce
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

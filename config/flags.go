@@ -41,6 +41,7 @@ type Flags struct {
 	Mine         bool
 	Coinbase     string
 	ValidatorKey string
+	MineThreads  int
 
 	// Sub-chain sync
 	SyncSubChains string
@@ -104,6 +105,7 @@ func ParseFlags() *Flags {
 	fs.BoolVar(&f.Mine, "mine", false, "Enable block production")
 	fs.StringVar(&f.Coinbase, "coinbase", "", "Address to receive block rewards")
 	fs.StringVar(&f.ValidatorKey, "validator-key", "", "Path to validator private key (PoA)")
+	fs.IntVar(&f.MineThreads, "mine-threads", 0, "Number of PoW mining threads (default: 1)")
 
 	// Sub-chain sync
 	fs.StringVar(&f.SyncSubChains, "sync-subchains", "", "Which sub-chains to sync: all, none (default), or comma-separated chain IDs")
@@ -219,6 +221,9 @@ func ApplyFlags(cfg *Config, f *Flags) {
 	if f.ValidatorKey != "" {
 		cfg.Mining.ValidatorKey = f.ValidatorKey
 	}
+	if f.MineThreads > 0 {
+		cfg.Mining.Threads = f.MineThreads
+	}
 
 	// Sub-chain sync
 	if f.SyncSubChains != "" {
@@ -303,6 +308,7 @@ Mining Options:
   --mine            Enable block production
   --coinbase        Address to receive block rewards
   --validator-key   Path to validator private key (for PoA chains)
+  --mine-threads    Number of PoW mining threads (default: 1)
 
 Sub-chain Options:
   --sync-subchains  Which sub-chains to sync: all, none (default), or
