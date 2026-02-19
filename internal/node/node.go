@@ -1662,37 +1662,70 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 func (n *Node) runSubChainMiner(ctx context.Context, m *miner.Miner, ch *chain.Chain,
 	pool *mempool.Pool, chainIDHex string, blockTime time.Duration, logger zerolog.Logger) {
 
-	ticker := time.NewTicker(blockTime)
-	defer ticker.Stop()
-
+	// PoW mining loops continuously — the proof-of-work itself is the throttle
+	// (Seal iterates nonces until the hash meets the difficulty target).
+	// A ticker would artificially pace blocks at the target rate, preventing
+	// difficulty from ever increasing above 1.
+	//
+	// When difficulty is low and blocks mine faster than real time, the
+	// monotonic timestamp rule (block.ts > parent.ts) pushes timestamps
+	// ahead of wall clock. We wait for wall clock to catch up before
+	// mining the next block to avoid "timestamp too far in the future"
+	// rejections. This naturally paces low-difficulty mining.
 	for {
 		select {
 		case <-ctx.Done():
 			logger.Info().Msg("Sub-chain miner stopped")
 			return
-		case <-ticker.C:
-			blk, err := m.ProduceBlock()
-			if err != nil {
-				logger.Warn().Err(err).Msg("Block production failed")
-				continue
-			}
-			if err := ch.ProcessBlock(blk); err != nil {
-				logger.Warn().Err(err).Msg("Block rejected")
-				continue
-			}
-			pool.RemoveConfirmed(blk.Transactions)
-
-			if n.p2pNode != nil {
-				if err := n.p2pNode.BroadcastSubChainBlock(chainIDHex, blk); err != nil {
-					logger.Warn().Err(err).Msg("Failed to broadcast sub-chain block")
-				}
-			}
-
-			logger.Info().
-				Uint64("height", blk.Header.Height).
-				Str("hash", blk.Hash().String()[:16]+"...").
-				Msg("Sub-chain block mined")
+		default:
 		}
+
+		// If the chain tip's timestamp is ahead of wall clock, wait for
+		// real time to catch up. This happens when difficulty is low and
+		// blocks are mined faster than one per second.
+		tipTS := ch.TipTimestamp()
+		now := uint64(time.Now().Unix())
+		if tipTS >= now {
+			wait := time.Duration(tipTS-now+1) * time.Second
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+		}
+
+		blk, err := m.ProduceBlock()
+		if err != nil {
+			logger.Warn().Err(err).Msg("Block production failed")
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+			continue
+		}
+		if err := ch.ProcessBlock(blk); err != nil {
+			logger.Warn().Err(err).Msg("Block rejected")
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+			continue
+		}
+		pool.RemoveConfirmed(blk.Transactions)
+
+		if n.p2pNode != nil {
+			if err := n.p2pNode.BroadcastSubChainBlock(chainIDHex, blk); err != nil {
+				logger.Warn().Err(err).Msg("Failed to broadcast sub-chain block")
+			}
+		}
+
+		logger.Info().
+			Uint64("height", blk.Header.Height).
+			Str("hash", blk.Hash().String()[:16]+"...").
+			Uint64("difficulty", blk.Header.Difficulty).
+			Msg("Sub-chain block mined")
 	}
 }
 

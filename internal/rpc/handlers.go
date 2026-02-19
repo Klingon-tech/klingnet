@@ -881,11 +881,19 @@ func (s *Server) handleMiningGetBlockTemplate(req *Request) (interface{}, *Error
 	}
 	merkle := block.ComputeMerkleRoot(txHashes)
 
+	// Ensure monotonic: template timestamp must be strictly after parent.
+	// External miners may also bump the timestamp themselves; ProcessBlock
+	// accepts any timestamp that is >= parent and <= now+2min.
+	timestamp := uint64(time.Now().Unix())
+	if parentTS := sr.Chain.TipTimestamp(); timestamp <= parentTS {
+		timestamp = parentTS + 1
+	}
+
 	header := &block.Header{
 		Version:    block.CurrentVersion,
 		PrevHash:   sr.Chain.TipHash(),
 		MerkleRoot: merkle,
-		Timestamp:  uint64(time.Now().Unix()),
+		Timestamp:  timestamp,
 		Height:     height,
 	}
 
