@@ -1,18 +1,25 @@
-import type { TxHistoryEntry } from '../utils/types';
+import type { NotificationSettings, TxHistoryEntry } from '../utils/types';
 
 function compactHash(hash: string): string {
   return hash.length > 16 ? `${hash.slice(0, 10)}...${hash.slice(-6)}` : hash;
 }
 
-export function shouldNotifyEntry(entry: TxHistoryEntry, changeAddrs: Set<string>): boolean {
+export function shouldNotifyEntry(
+  entry: TxHistoryEntry,
+  changeAddrs: Set<string>,
+  settings: NotificationSettings,
+): boolean {
   switch (entry.type) {
-    case 'sent':
-    case 'token_sent':
     case 'mined':
-      return true;
+      return settings.mined;
+    case 'sent':
+      return settings.sent;
+    case 'token_sent':
+      return settings.token_sent;
     case 'received':
+      return settings.received && !!entry.to && !changeAddrs.has(entry.to);
     case 'token_received':
-      return !!entry.to && !changeAddrs.has(entry.to);
+      return settings.token_received && !!entry.to && !changeAddrs.has(entry.to);
     default:
       return false;
   }

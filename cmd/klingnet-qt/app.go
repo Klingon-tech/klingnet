@@ -13,13 +13,33 @@ import (
 	"github.com/Klingon-tech/klingnet-chain/internal/rpcclient"
 )
 
+// NotificationSettings holds per-category notification preferences.
+type NotificationSettings struct {
+	Mined         bool `json:"mined"`
+	Sent          bool `json:"sent"`
+	Received      bool `json:"received"`
+	TokenSent     bool `json:"token_sent"`
+	TokenReceived bool `json:"token_received"`
+}
+
+// allNotificationsEnabled returns settings with all categories enabled.
+func allNotificationsEnabled() NotificationSettings {
+	return NotificationSettings{
+		Mined:         true,
+		Sent:          true,
+		Received:      true,
+		TokenSent:     true,
+		TokenReceived: true,
+	}
+}
+
 // qtSettings is the persistent configuration written to qt-settings.json.
 type qtSettings struct {
-	DataDir       string                   `json:"data_dir"`
-	Network       string                   `json:"network"`
-	ActiveWallet  string                   `json:"active_wallet"`
-	Notifications bool                     `json:"notifications"`
-	KnownAccounts map[string][]AccountInfo `json:"known_accounts,omitempty"`
+	DataDir              string                   `json:"data_dir"`
+	Network              string                   `json:"network"`
+	ActiveWallet         string                   `json:"active_wallet"`
+	NotificationSettings *NotificationSettings    `json:"notification_settings,omitempty"`
+	KnownAccounts        map[string][]AccountInfo `json:"known_accounts,omitempty"`
 }
 
 // App manages application lifecycle and settings.
@@ -29,7 +49,7 @@ type App struct {
 	dataDir      string
 	networkName  string // "mainnet" or "testnet"
 	activeWallet string // currently selected wallet name
-	notify       bool
+	notifySettings NotificationSettings
 
 	// knownAccounts caches wallet addresses so balance works without unlock.
 	mu            sync.RWMutex
@@ -49,11 +69,11 @@ type App struct {
 // NewApp creates the application with default settings.
 func NewApp() *App {
 	app := &App{
-		rpcEndpoint:   "http://127.0.0.1:8545",
-		dataDir:       defaultDataDir(),
-		networkName:   "mainnet",
-		notify:        true,
-		knownAccounts: make(map[string][]AccountInfo),
+		rpcEndpoint:    "http://127.0.0.1:8545",
+		dataDir:        defaultDataDir(),
+		networkName:    "mainnet",
+		notifySettings: allNotificationsEnabled(),
+		knownAccounts:  make(map[string][]AccountInfo),
 	}
 	app.wallet = &WalletService{app: app}
 	app.chain = &ChainService{app: app}
@@ -132,7 +152,13 @@ func (a *App) loadSettings() {
 		a.networkName = s.Network
 	}
 	a.activeWallet = s.ActiveWallet
-	a.notify = s.Notifications || !hasNotificationsKey(data)
+	if s.NotificationSettings != nil {
+		a.notifySettings = *s.NotificationSettings
+	} else {
+		// Backward compat: old settings file had no notification_settings.
+		// Default to all enabled.
+		a.notifySettings = allNotificationsEnabled()
+	}
 	if s.KnownAccounts != nil {
 		a.knownAccounts = s.KnownAccounts
 	}
@@ -146,12 +172,13 @@ func (a *App) saveSettings() {
 	}
 	a.mu.RUnlock()
 
+	ns := a.notifySettings
 	s := qtSettings{
-		DataDir:       a.dataDir,
-		Network:       a.networkName,
-		ActiveWallet:  a.activeWallet,
-		Notifications: a.notify,
-		KnownAccounts: accts,
+		DataDir:              a.dataDir,
+		Network:              a.networkName,
+		ActiveWallet:         a.activeWallet,
+		NotificationSettings: &ns,
+		KnownAccounts:        accts,
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
@@ -199,25 +226,23 @@ func (a *App) SetActiveWallet(name string) {
 	a.saveSettings()
 }
 
-// GetNotificationsEnabled returns whether desktop transaction notifications are enabled.
-func (a *App) GetNotificationsEnabled() bool {
-	return a.notify
+// GetNotificationSettings returns per-category notification preferences.
+func (a *App) GetNotificationSettings() NotificationSettings {
+	return a.notifySettings
 }
 
-// SetNotificationsEnabled enables/disables desktop transaction notifications.
-func (a *App) SetNotificationsEnabled(enabled bool) {
-	a.notify = enabled
+// SetNotificationSettings updates per-category notification preferences.
+func (a *App) SetNotificationSettings(s NotificationSettings) {
+	a.notifySettings = s
 	a.saveSettings()
 }
 
 // SendNotification sends an OS desktop notification.
 // The browser Notification API is not available inside Wails' WebView,
 // so the frontend calls this Go method instead.
+// Per-category filtering is done by the frontend before calling this.
 // Platform-specific implementation is in notify_*.go files.
 func (a *App) SendNotification(title, body string) {
-	if !a.notify {
-		return
-	}
 	sendOSNotification(title, body)
 }
 
@@ -271,12 +296,3 @@ func defaultDataDir() string {
 	return config.DefaultDataDir()
 }
 
-// hasNotificationsKey detects if "notifications" exists in settings JSON.
-func hasNotificationsKey(data []byte) bool {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return false
-	}
-	_, ok := raw["notifications"]
-	return ok
-}

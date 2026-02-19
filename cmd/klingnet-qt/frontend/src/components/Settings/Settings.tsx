@@ -6,12 +6,15 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import type { NotificationSettings } from '../../utils/types';
 
 export default function Settings() {
   const { refreshWallets, lock } = useWallet();
   const [dataDir, setDataDir] = useState('');
   const [network, setNetwork] = useState('mainnet');
-  const [notifications, setNotifications] = useState(true);
+  const [notifySettings, setNotifySettings] = useState<NotificationSettings>({
+    mined: true, sent: true, received: true, token_sent: true, token_received: true,
+  });
   const [confFilePath, setConfFilePath] = useState('');
   const [startupError, setStartupError] = useState('');
   const [saved, setSaved] = useState(false);
@@ -22,7 +25,7 @@ export default function Settings() {
         const mod = await import('../../../wailsjs/go/main/App');
         setDataDir(await mod.GetDataDir());
         setNetwork(await mod.GetNetwork());
-        setNotifications(await mod.GetNotificationsEnabled());
+        setNotifySettings(await mod.GetNotificationSettings());
         setConfFilePath(await mod.GetConfFilePath());
         const err = await mod.GetStartupError();
         if (err) setStartupError(err);
@@ -37,7 +40,7 @@ export default function Settings() {
       const mod = await import('../../../wailsjs/go/main/App');
       await mod.SetDataDir(dataDir);
       await mod.SetNetwork(network);
-      await mod.SetNotificationsEnabled(notifications);
+      await mod.SetNotificationSettings(notifySettings);
       // Reload wallet list with updated network.
       lock();
       await refreshWallets();
@@ -46,6 +49,10 @@ export default function Settings() {
     } catch {
       // ignore
     }
+  };
+
+  const toggleNotify = (key: keyof NotificationSettings) => {
+    setNotifySettings((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
   return (
@@ -86,16 +93,25 @@ export default function Settings() {
           </div>
           <div className="space-y-2">
             <Label>Desktop Notifications</Label>
-            <Select value={notifications ? 'enabled' : 'disabled'} onValueChange={(v) => setNotifications(v === 'enabled')}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select notification mode" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="enabled">Enabled</SelectItem>
-                <SelectItem value="disabled">Disabled</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">Notifies on sent, received, and mined block rewards.</p>
+            <div className="space-y-1 pl-1">
+              {([
+                ['mined', 'Block rewards (mined)'],
+                ['sent', 'KGX sent'],
+                ['received', 'KGX received'],
+                ['token_sent', 'Token sent'],
+                ['token_received', 'Token received'],
+              ] as [keyof NotificationSettings, string][]).map(([key, label]) => (
+                <label key={key} className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={notifySettings[key]}
+                    onChange={() => toggleNotify(key)}
+                    className="rounded border-input"
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
           </div>
           <div className="space-y-2">
             <Label>Config File</Label>

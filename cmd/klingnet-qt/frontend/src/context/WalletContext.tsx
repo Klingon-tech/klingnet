@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
-import type { AccountInfo, BalanceInfo, TxHistoryEntry } from '../utils/types';
+import type { AccountInfo, BalanceInfo, NotificationSettings, TxHistoryEntry } from '../utils/types';
 import { entryNotificationKey, notifyEntry, shouldNotifyEntry } from '../lib/notifications';
 
 const emptyBalance: BalanceInfo = {
@@ -49,17 +49,18 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [password, setPassword] = useState('');
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [balance, setBalance] = useState<BalanceInfo>(emptyBalance);
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const allEnabled: NotificationSettings = { mined: true, sent: true, received: true, token_sent: true, token_received: true };
+  const [notifySettings, setNotifySettings] = useState<NotificationSettings>(allEnabled);
 
   // Keep refs for values used in intervals to avoid stale closures.
   const passwordRef = useRef(password);
   const walletNameRef = useRef(walletName);
-  const notificationsEnabledRef = useRef(notificationsEnabled);
+  const notifySettingsRef = useRef(notifySettings);
   const notifiedEntriesRef = useRef<Set<string>>(new Set());
   const historyBootstrappedRef = useRef(false);
   passwordRef.current = password;
   walletNameRef.current = walletName;
-  notificationsEnabledRef.current = notificationsEnabled;
+  notifySettingsRef.current = notifySettings;
 
   // Load wallet list + active wallet + cached accounts on mount.
   const refreshWallets = useCallback(async () => {
@@ -78,7 +79,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       try {
         const appMod = await import('../../wailsjs/go/main/App');
         const active = await appMod.GetActiveWallet();
-        setNotificationsEnabled(await appMod.GetNotificationsEnabled());
+        setNotifySettings(await appMod.GetNotificationSettings());
         if (active) {
           setWalletName(active);
           // Load cached accounts (addresses only, no keys) for balance display.
@@ -188,7 +189,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
     const changeAddrs = new Set(accounts.filter((a) => a.change === 1).map((a) => a.address));
     const scanAndNotify = async () => {
-      if (!notificationsEnabledRef.current) return;
+      const s = notifySettingsRef.current;
+      if (!s.mined && !s.sent && !s.received && !s.token_sent && !s.token_received) return;
       try {
         const mod = await import('../../wailsjs/go/main/WalletService');
         const result = await mod.GetTransactionHistory(walletNameRef.current, passwordRef.current, 40, 0);
@@ -204,7 +206,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           const key = entryNotificationKey(e);
           if (notifiedEntriesRef.current.has(key)) continue;
           notifiedEntriesRef.current.add(key);
-          if (shouldNotifyEntry(e, changeAddrs)) {
+          if (shouldNotifyEntry(e, changeAddrs, s)) {
             void notifyEntry(e);
           }
         }

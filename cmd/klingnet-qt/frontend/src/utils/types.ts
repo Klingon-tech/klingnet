@@ -282,6 +282,14 @@ export interface NewAddressResult {
   address: string;
 }
 
+export interface NotificationSettings {
+  mined: boolean;
+  sent: boolean;
+  received: boolean;
+  token_sent: boolean;
+  token_received: boolean;
+}
+
 export interface TxHistoryEntry {
   tx_hash: string;
   block_hash: string;
