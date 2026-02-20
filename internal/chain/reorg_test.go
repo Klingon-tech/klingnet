@@ -322,6 +322,80 @@ func TestReorg_TxIndexUpdated(t *testing.T) {
 	}
 }
 
+// TestReorg_ForkBranchBelowMainChainHeight verifies that collectBranch
+// correctly walks back through fork blocks whose heights exceed the main
+// chain tip. This reproduces the bug where GetBlockByHeight fails for
+// heights above the main chain, and collectBranch previously broke early,
+// returning an incomplete branch that caused the reorg to fail.
+func TestReorg_ForkBranchBelowMainChainHeight(t *testing.T) {
+	ch, _, addr, _ := reorgTestChain(t)
+	genesisHash := ch.TipHash()
+
+	// Main chain: only 1 block (height 1).
+	blkA1 := buildCoinbaseBlock(t, ch, genesisHash, 1, addr, 0)
+	if err := ch.ProcessBlock(blkA1); err != nil {
+		t.Fatalf("process A1: %v", err)
+	}
+	if ch.Height() != 1 {
+		t.Fatalf("expected height 1, got %d", ch.Height())
+	}
+
+	// Fork from genesis: B1, B2, B3, B4 (longer than main chain).
+	// B2-B4 are at heights 2-4 which are above the main chain tip (1).
+	// collectBranch must walk back through all of them via PrevHash
+	// without breaking when GetBlockByHeight fails at heights 2-4.
+	blkB1 := buildCoinbaseBlock(t, ch, genesisHash, 1, addr, 200)
+	blkB2 := buildCoinbaseBlock(t, ch, blkB1.Hash(), 2, addr, 200)
+	blkB3 := buildCoinbaseBlock(t, ch, blkB2.Hash(), 3, addr, 200)
+	blkB4 := buildCoinbaseBlock(t, ch, blkB3.Hash(), 4, addr, 200)
+
+	// Process B1 — stored as fork block, no reorg (height 1 = current tip).
+	if err := ch.ProcessBlock(blkB1); err != nil {
+		t.Fatalf("process B1: %v", err)
+	}
+	if ch.Height() != 1 {
+		t.Errorf("after B1: expected height 1, got %d", ch.Height())
+	}
+
+	// Process B2 — height 2 > main tip 1, triggers reorg attempt.
+	if err := ch.ProcessBlock(blkB2); err != nil {
+		t.Fatalf("process B2: %v", err)
+	}
+
+	// Process B3, B4.
+	if err := ch.ProcessBlock(blkB3); err != nil {
+		t.Fatalf("process B3: %v", err)
+	}
+	if err := ch.ProcessBlock(blkB4); err != nil {
+		t.Fatalf("process B4: %v", err)
+	}
+
+	// After reorg: chain should be on the B fork at height 4.
+	if ch.Height() != 4 {
+		t.Errorf("after reorg: expected height 4, got %d", ch.Height())
+	}
+	if ch.TipHash() != blkB4.Hash() {
+		t.Errorf("after reorg: tip should be B4, got %s", ch.TipHash())
+	}
+
+	// Verify the entire B branch is accessible by height.
+	for h, expected := range map[uint64]types.Hash{
+		1: blkB1.Hash(),
+		2: blkB2.Hash(),
+		3: blkB3.Hash(),
+		4: blkB4.Hash(),
+	} {
+		blk, err := ch.GetBlockByHeight(h)
+		if err != nil {
+			t.Errorf("GetBlockByHeight(%d): %v", h, err)
+			continue
+		}
+		if blk.Hash() != expected {
+			t.Errorf("height %d: got %s, want %s", h, blk.Hash(), expected)
+		}
+	}
+}
+
 func TestReorg_InTurnBeatsOutOfTurn(t *testing.T) {
 	// Two validators. The chain uses time-slot election so we can craft
 	// timestamps where one is in-turn and the other is out-of-turn.

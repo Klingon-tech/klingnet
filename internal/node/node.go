@@ -68,6 +68,9 @@ type Node struct {
 	scHBMu    sync.Mutex
 	scHBs     map[types.ChainID]context.CancelFunc
 
+	// Sync
+	rootSyncing atomic.Bool
+
 	// Lifecycle
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -229,7 +232,6 @@ func New(cfg *config.Config) (*Node, error) {
 		p2pNode.SetHeightFn(func() uint64 { return ch.Height() })
 
 		// Block handler with sync trigger for unknown parents.
-		var rootSyncing atomic.Bool
 		p2pNode.SetBlockHandler(func(from peer.ID, data []byte) {
 			var blk block.Block
 			if err := json.Unmarshal(data, &blk); err != nil {
@@ -238,13 +240,8 @@ func New(cfg *config.Config) (*Node, error) {
 				return
 			}
 			if err := ch.ProcessBlock(&blk); err != nil {
-				if errors.Is(err, chain.ErrPrevNotFound) && rootSyncing.CompareAndSwap(false, true) {
-					go func() {
-						defer rootSyncing.Store(false)
-						if nodeRef != nil {
-							nodeRef.runStartupSync()
-						}
-					}()
+				if errors.Is(err, chain.ErrPrevNotFound) && nodeRef != nil {
+					go nodeRef.runStartupSync()
 				}
 				if !errors.Is(err, chain.ErrBlockKnown) &&
 					!errors.Is(err, chain.ErrPrevNotFound) &&
@@ -625,6 +622,10 @@ func (n *Node) runStartupSync() {
 	if n.p2pNode == nil || n.syncer == nil {
 		return
 	}
+	if !n.rootSyncing.CompareAndSwap(false, true) {
+		return // Another sync is already running.
+	}
+	defer n.rootSyncing.Store(false)
 	peers := n.p2pNode.PeerList()
 	if len(peers) == 0 {
 		n.logger.Info().Msg("No peers for startup sync")
@@ -699,6 +700,10 @@ func (n *Node) runStartupSync() {
 		cancel()
 		if err != nil {
 			n.logger.Warn().Err(err).Uint64("from", from).Msg("Sync request failed")
+			break
+		}
+		if len(blocks) == 0 {
+			n.logger.Warn().Uint64("from", from).Msg("Peer returned empty batch, aborting sync")
 			break
 		}
 
@@ -810,6 +815,10 @@ func (n *Node) resolveFork(peerID peer.ID, failedHeight, peerTip uint64) {
 		cancel()
 		if err != nil {
 			n.logger.Warn().Err(err).Uint64("from", from).Msg("Fork sync request failed")
+			return
+		}
+		if len(blocks) == 0 {
+			n.logger.Warn().Uint64("from", from).Msg("Peer returned empty batch during fork sync, aborting")
 			return
 		}
 
@@ -1372,6 +1381,10 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 			logger.Warn().Err(err).Uint64("from", from).Msg("Sub-chain sync request failed")
 			break
 		}
+		if len(blocks) == 0 {
+			logger.Warn().Uint64("from", from).Msg("Peer returned empty batch for sub-chain, aborting sync")
+			break
+		}
 
 		for _, blk := range blocks {
 			if err := ch.ProcessBlock(blk); err != nil {
@@ -1482,6 +1495,10 @@ func (n *Node) resolveSubChainFork(ch *chain.Chain, pool *mempool.Pool,
 		cancel()
 		if err != nil {
 			logger.Warn().Err(err).Uint64("from", from).Msg("Sub-chain fork sync request failed")
+			return
+		}
+		if len(blocks) == 0 {
+			logger.Warn().Uint64("from", from).Msg("Peer returned empty batch during sub-chain fork sync, aborting")
 			return
 		}
 

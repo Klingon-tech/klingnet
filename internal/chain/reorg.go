@@ -384,13 +384,9 @@ func (c *Chain) collectBranch(tipHash types.Hash) ([]*block.Block, error) {
 		}
 		parentHeight := blk.Header.Height - 1
 		mainBlock, err := c.blocks.GetBlockByHeight(parentHeight)
-		if err != nil {
-			break // No block at this height on main chain.
-		}
-		if mainBlock.Hash() == blk.Header.PrevHash {
+		if err == nil && mainBlock.Hash() == blk.Header.PrevHash {
 			break // Common ancestor found.
 		}
-
 		hash = blk.Header.PrevHash
 	}
 
