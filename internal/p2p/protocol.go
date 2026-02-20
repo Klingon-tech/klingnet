@@ -19,10 +19,12 @@ const (
 	HandshakeProtocol = protocol.ID("/klingnet/handshake/1.0.0")
 
 	// ProtocolVersion is the current protocol version advertised during handshake.
-	ProtocolVersion uint32 = 1
+	// v2: fixed sync/reorg bugs that caused nodes to get stuck with orphan blocks.
+	ProtocolVersion uint32 = 2
 
 	// MinProtocolVersion is the minimum protocol version we accept from peers.
-	MinProtocolVersion uint32 = 1
+	// v2 required: v1 peers may have corrupted block stores that return empty batches.
+	MinProtocolVersion uint32 = 2
 )
 
 // SubChainBlockTopic returns the GossipSub topic for a sub-chain's blocks.

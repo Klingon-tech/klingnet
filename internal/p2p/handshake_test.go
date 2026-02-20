@@ -11,7 +11,7 @@ import (
 
 func TestHandshakeMessage_JSON(t *testing.T) {
 	msg := HandshakeMessage{
-		ProtocolVersion: 1,
+		ProtocolVersion: ProtocolVersion,
 		GenesisHash:     types.Hash{0xaa, 0xbb, 0xcc},
 		NetworkID:       "klingnet-testnet-1",
 		BestHeight:      42,
@@ -87,6 +87,22 @@ func TestNode_ValidateHandshake_VersionTooLow(t *testing.T) {
 	reason := n.validateHandshake(msg)
 	if reason == "" {
 		t.Error("expected version too low reason, got empty")
+	}
+}
+
+func TestNode_ValidateHandshake_V1Rejected(t *testing.T) {
+	n := New(Config{ListenAddr: "127.0.0.1", Port: 0})
+	n.genesisHash = types.Hash{0x01}
+
+	msg := HandshakeMessage{
+		ProtocolVersion: 1, // Old protocol version.
+		GenesisHash:     types.Hash{0x01},
+		NetworkID:       "test",
+	}
+
+	reason := n.validateHandshake(msg)
+	if reason == "" {
+		t.Error("expected v1 peer to be rejected, got empty reason")
 	}
 }
 

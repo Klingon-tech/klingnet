@@ -355,7 +355,7 @@ func Load() (*Config, *Flags, error) {
 		os.Exit(0)
 	}
 	if flags.Version {
-		fmt.Println("klingnetd version 0.1.0")
+		fmt.Println("klingnetd version 0.0.5")
 		os.Exit(0)
 	}
 

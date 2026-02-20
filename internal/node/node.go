@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -632,12 +633,16 @@ func (n *Node) runStartupSync() {
 		return
 	}
 
-	var bestPeer peer.ID
-	var bestHeight uint64
-	var bestTipHash string
-	limit := 3
-	if len(peers) < limit {
-		limit = len(peers)
+	// Query peers for height and collect candidates sorted by height.
+	type syncPeer struct {
+		id      peer.ID
+		height  uint64
+		tipHash string
+	}
+	var candidates []syncPeer
+	limit := len(peers)
+	if limit > 8 {
+		limit = 8
 	}
 	for _, p := range peers[:limit] {
 		reqCtx, cancel := context.WithTimeout(n.ctx, 5*time.Second)
@@ -646,15 +651,18 @@ func (n *Node) runStartupSync() {
 		if err != nil {
 			continue
 		}
-		if resp.Height > bestHeight {
-			bestHeight = resp.Height
-			bestTipHash = resp.TipHash
-			bestPeer = p.ID
-		} else if resp.Height == bestHeight && resp.TipHash != bestTipHash {
-			bestTipHash = resp.TipHash
-			bestPeer = p.ID
+		if resp.Height > 0 {
+			candidates = append(candidates, syncPeer{id: p.ID, height: resp.Height, tipHash: resp.TipHash})
 		}
 	}
+	if len(candidates) == 0 {
+		return
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].height > candidates[j].height
+	})
+
+	best := candidates[0]
 
 	// Read local state AFTER peer queries complete — reading before the
 	// loop created a race where mining during the peer round-trips made
@@ -663,54 +671,63 @@ func (n *Node) runStartupSync() {
 	localTip := n.ch.TipHash().String()
 
 	// Detect same-height fork: heights match but tips differ.
-	if bestHeight == localHeight && bestHeight > 0 {
-		if bestTipHash != "" && bestTipHash != localTip {
+	if best.height == localHeight && best.height > 0 {
+		if best.tipHash != "" && best.tipHash != localTip {
 			n.logger.Info().
 				Uint64("height", localHeight).
 				Str("local_tip", localTip[:16]+"...").
-				Str("peer_tip", bestTipHash[:16]+"...").
+				Str("peer_tip", best.tipHash[:16]+"...").
 				Msg("Same-height fork detected, resolving")
-			n.resolveFork(bestPeer, localHeight, bestHeight)
+			n.resolveFork(best.id, localHeight, best.height)
 		}
 		return
 	}
 
-	if bestHeight <= localHeight {
+	if best.height <= localHeight {
 		n.logger.Info().Uint64("height", localHeight).Msg("Chain is up to date")
 		return
 	}
 
-	total := bestHeight - localHeight
+	total := best.height - localHeight
 	n.logger.Info().
 		Uint64("local", localHeight).
-		Uint64("remote", bestHeight).
+		Uint64("remote", best.height).
 		Uint64("blocks", total).
 		Msg("Syncing chain")
 
 	syncStart := time.Now()
+	peerIdx := 0
+	currentPeer := candidates[peerIdx].id
 
-	for from := localHeight + 1; from <= bestHeight; {
+	for from := localHeight + 1; from <= best.height; {
 		max := uint32(500)
-		if from+uint64(max)-1 > bestHeight {
-			max = uint32(bestHeight - from + 1)
+		if from+uint64(max)-1 > best.height {
+			max = uint32(best.height - from + 1)
 		}
 
 		reqCtx, cancel := context.WithTimeout(n.ctx, 30*time.Second)
-		blocks, err := n.syncer.RequestBlocks(reqCtx, bestPeer, from, max)
+		blocks, err := n.syncer.RequestBlocks(reqCtx, currentPeer, from, max)
 		cancel()
-		if err != nil {
-			n.logger.Warn().Err(err).Uint64("from", from).Msg("Sync request failed")
-			break
-		}
-		if len(blocks) == 0 {
-			n.logger.Warn().Uint64("from", from).Msg("Peer returned empty batch, aborting sync")
-			break
-		}
-		if blocks[0].Header.Height != from {
-			n.logger.Warn().
-				Uint64("from", from).
-				Uint64("first", blocks[0].Header.Height).
-				Msg("Peer returned non-contiguous batch, aborting sync")
+
+		// On failure or bad batch, try the next peer.
+		if err != nil || len(blocks) == 0 || blocks[0].Header.Height != from {
+			reason := "empty batch"
+			if err != nil {
+				reason = err.Error()
+			} else if len(blocks) > 0 {
+				reason = fmt.Sprintf("non-contiguous batch (wanted %d, got %d)", from, blocks[0].Header.Height)
+			}
+			peerIdx++
+			if peerIdx < len(candidates) {
+				currentPeer = candidates[peerIdx].id
+				n.logger.Warn().
+					Uint64("from", from).
+					Str("reason", reason).
+					Str("next_peer", currentPeer.String()[:16]+"...").
+					Msg("Peer failed to serve blocks, trying next peer")
+				continue // Retry same height with next peer.
+			}
+			n.logger.Warn().Uint64("from", from).Str("reason", reason).Msg("All sync peers exhausted")
 			break
 		}
 
@@ -732,7 +749,7 @@ func (n *Node) runStartupSync() {
 					n.logger.Info().
 						Uint64("height", blk.Header.Height).
 						Msg("Fork detected during sync, resolving")
-					n.resolveFork(bestPeer, blk.Header.Height, bestHeight)
+					n.resolveFork(currentPeer, blk.Header.Height, best.height)
 					return
 				}
 				n.logger.Warn().Err(err).Uint64("height", blk.Header.Height).Msg("Sync block failed")
@@ -756,7 +773,7 @@ func (n *Node) runStartupSync() {
 
 		n.logger.Info().
 			Uint64("height", n.ch.Height()).
-			Uint64("target", bestHeight).
+			Uint64("target", best.height).
 			Str("progress", fmt.Sprintf("%.1f%%", pct)).
 			Str("speed", fmt.Sprintf("%.0f blk/s", bps)).
 			Str("eta", remaining).
@@ -1352,12 +1369,16 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 		return
 	}
 
-	var bestPeer peer.ID
-	var bestHeight uint64
-	var bestTipHash string
-	limit := 3
-	if len(peers) < limit {
-		limit = len(peers)
+	// Query peers for sub-chain height and collect candidates sorted by height.
+	type syncPeer struct {
+		id      peer.ID
+		height  uint64
+		tipHash string
+	}
+	var candidates []syncPeer
+	limit := len(peers)
+	if limit > 8 {
+		limit = 8
 	}
 	for _, p := range peers[:limit] {
 		reqCtx, cancel := context.WithTimeout(n.ctx, 5*time.Second)
@@ -1366,66 +1387,78 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 		if err != nil {
 			continue
 		}
-		if resp.Height > bestHeight {
-			bestHeight = resp.Height
-			bestTipHash = resp.TipHash
-			bestPeer = p.ID
-		} else if resp.Height == bestHeight && resp.TipHash != bestTipHash {
-			bestTipHash = resp.TipHash
-			bestPeer = p.ID
+		if resp.Height > 0 {
+			candidates = append(candidates, syncPeer{id: p.ID, height: resp.Height, tipHash: resp.TipHash})
 		}
 	}
+	if len(candidates) == 0 {
+		return
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].height > candidates[j].height
+	})
+
+	best := candidates[0]
 
 	// Read local state after peer queries to avoid stale-tip race.
 	localHeight := ch.Height()
 	localTip := ch.TipHash().String()
 
 	// Detect same-height fork: heights match but tips differ.
-	if bestHeight == localHeight && bestHeight > 0 {
-		if bestTipHash != "" && bestTipHash != localTip {
+	if best.height == localHeight && best.height > 0 {
+		if best.tipHash != "" && best.tipHash != localTip {
 			logger.Info().
 				Uint64("height", localHeight).
 				Msg("Same-height sub-chain fork detected, resolving")
-			n.resolveSubChainFork(ch, pool, bestPeer, chainIDHex, localHeight, bestHeight, logger)
+			n.resolveSubChainFork(ch, pool, best.id, chainIDHex, localHeight, best.height, logger)
 		}
 		return
 	}
 
-	if bestHeight <= localHeight {
+	if best.height <= localHeight {
 		return
 	}
 
-	total := bestHeight - localHeight
+	total := best.height - localHeight
 	logger.Info().
 		Uint64("local", localHeight).
-		Uint64("remote", bestHeight).
+		Uint64("remote", best.height).
 		Uint64("blocks", total).
 		Msg("Syncing sub-chain")
 
 	syncStart := time.Now()
+	peerIdx := 0
+	currentPeer := candidates[peerIdx].id
 
-	for from := localHeight + 1; from <= bestHeight; {
+	for from := localHeight + 1; from <= best.height; {
 		max := uint32(500)
-		if from+uint64(max)-1 > bestHeight {
-			max = uint32(bestHeight - from + 1)
+		if from+uint64(max)-1 > best.height {
+			max = uint32(best.height - from + 1)
 		}
 
 		reqCtx, cancel := context.WithTimeout(n.ctx, 30*time.Second)
-		blocks, err := n.syncer.RequestSubChainBlocks(reqCtx, bestPeer, chainIDHex, from, max)
+		blocks, err := n.syncer.RequestSubChainBlocks(reqCtx, currentPeer, chainIDHex, from, max)
 		cancel()
-		if err != nil {
-			logger.Warn().Err(err).Uint64("from", from).Msg("Sub-chain sync request failed")
-			break
-		}
-		if len(blocks) == 0 {
-			logger.Warn().Uint64("from", from).Msg("Peer returned empty batch for sub-chain, aborting sync")
-			break
-		}
-		if blocks[0].Header.Height != from {
-			logger.Warn().
-				Uint64("from", from).
-				Uint64("first", blocks[0].Header.Height).
-				Msg("Peer returned non-contiguous sub-chain batch, aborting sync")
+
+		// On failure or bad batch, try the next peer.
+		if err != nil || len(blocks) == 0 || blocks[0].Header.Height != from {
+			reason := "empty batch"
+			if err != nil {
+				reason = err.Error()
+			} else if len(blocks) > 0 {
+				reason = fmt.Sprintf("non-contiguous batch (wanted %d, got %d)", from, blocks[0].Header.Height)
+			}
+			peerIdx++
+			if peerIdx < len(candidates) {
+				currentPeer = candidates[peerIdx].id
+				logger.Warn().
+					Uint64("from", from).
+					Str("reason", reason).
+					Str("next_peer", currentPeer.String()[:16]+"...").
+					Msg("Peer failed to serve sub-chain blocks, trying next peer")
+				continue
+			}
+			logger.Warn().Uint64("from", from).Str("reason", reason).Msg("All sub-chain sync peers exhausted")
 			break
 		}
 
@@ -1447,7 +1480,7 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 					logger.Info().
 						Uint64("height", blk.Header.Height).
 						Msg("Fork detected during sub-chain sync, resolving")
-					n.resolveSubChainFork(ch, pool, bestPeer, chainIDHex, blk.Header.Height, bestHeight, logger)
+					n.resolveSubChainFork(ch, pool, currentPeer, chainIDHex, blk.Header.Height, best.height, logger)
 					return
 				}
 				logger.Warn().Err(err).Uint64("height", blk.Header.Height).Msg("Sub-chain sync block failed")
@@ -1470,7 +1503,7 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 
 		logger.Info().
 			Uint64("height", ch.Height()).
-			Uint64("target", bestHeight).
+			Uint64("target", best.height).
 			Str("progress", fmt.Sprintf("%.1f%%", pct)).
 			Str("speed", fmt.Sprintf("%.0f blk/s", bps)).
 			Str("eta", remaining).
