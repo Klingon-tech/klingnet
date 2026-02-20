@@ -75,8 +75,11 @@ func (n *Node) doHandshake(peerID peer.ID) {
 
 	stream, err := n.host.NewStream(ctx, peerID, HandshakeProtocol)
 	if err != nil {
-		// Peer doesn't support handshake protocol — tolerate for now.
-		logger.Debug().Str("peer", peerID.String()[:16]).Msg("Peer does not support handshake protocol, tolerating")
+		logger.Warn().Str("peer", peerID.String()[:16]).Msg("Peer does not support handshake protocol, disconnecting")
+		if n.BanManager != nil {
+			n.BanManager.RecordOffense(peerID, PenaltyHandshakeFail, "no handshake support")
+		}
+		n.DisconnectPeer(peerID)
 		return
 	}
 	defer stream.Close()
