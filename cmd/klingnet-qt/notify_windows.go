@@ -5,6 +5,7 @@ package main
 import (
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
 func sendOSNotification(title, body string) {
@@ -23,5 +24,7 @@ func sendOSNotification(title, body string) {
 		`$n.ShowBalloonTip(5000);` +
 		`Start-Sleep -Milliseconds 5100;` +
 		`$n.Dispose()`
-	_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).Start()
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	_ = cmd.Start()
 }
