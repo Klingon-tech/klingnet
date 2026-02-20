@@ -689,7 +689,7 @@ func (n *Node) runStartupSync() {
 
 	syncStart := time.Now()
 
-	for from := localHeight + 1; from <= bestHeight; from += 500 {
+	for from := localHeight + 1; from <= bestHeight; {
 		max := uint32(500)
 		if from+uint64(max)-1 > bestHeight {
 			max = uint32(bestHeight - from + 1)
@@ -706,10 +706,26 @@ func (n *Node) runStartupSync() {
 			n.logger.Warn().Uint64("from", from).Msg("Peer returned empty batch, aborting sync")
 			break
 		}
+		if blocks[0].Header.Height != from {
+			n.logger.Warn().
+				Uint64("from", from).
+				Uint64("first", blocks[0].Header.Height).
+				Msg("Peer returned non-contiguous batch, aborting sync")
+			break
+		}
 
+		nextFrom := from
 		for _, blk := range blocks {
+			if blk.Header.Height != nextFrom {
+				n.logger.Warn().
+					Uint64("expected", nextFrom).
+					Uint64("got", blk.Header.Height).
+					Msg("Peer batch has height gap, aborting sync")
+				return
+			}
 			if err := n.ch.ProcessBlock(blk); err != nil {
 				if errors.Is(err, chain.ErrBlockKnown) {
+					nextFrom++
 					continue
 				}
 				if errors.Is(err, chain.ErrPrevNotFound) {
@@ -724,7 +740,9 @@ func (n *Node) runStartupSync() {
 			}
 			n.pool.RemoveConfirmed(blk.Transactions)
 			token.ExtractAndStoreMetadata(n.tokenStore, blk)
+			nextFrom++
 		}
+		from = nextFrom
 
 		synced := n.ch.Height() - localHeight
 		pct := float64(synced) / float64(total) * 100
@@ -804,7 +822,7 @@ func (n *Node) resolveFork(peerID peer.ID, failedHeight, peerTip uint64) {
 		Uint64("fork_blocks", peerTip-ancestorHeight).
 		Msg("Common ancestor found, downloading fork blocks")
 
-	for from := ancestorHeight + 1; from <= peerTip; from += 500 {
+	for from := ancestorHeight + 1; from <= peerTip; {
 		max := uint32(500)
 		if from+uint64(max)-1 > peerTip {
 			max = uint32(peerTip - from + 1)
@@ -821,10 +839,26 @@ func (n *Node) resolveFork(peerID peer.ID, failedHeight, peerTip uint64) {
 			n.logger.Warn().Uint64("from", from).Msg("Peer returned empty batch during fork sync, aborting")
 			return
 		}
+		if blocks[0].Header.Height != from {
+			n.logger.Warn().
+				Uint64("from", from).
+				Uint64("first", blocks[0].Header.Height).
+				Msg("Peer returned non-contiguous fork batch, aborting")
+			return
+		}
 
+		nextFrom := from
 		for _, blk := range blocks {
+			if blk.Header.Height != nextFrom {
+				n.logger.Warn().
+					Uint64("expected", nextFrom).
+					Uint64("got", blk.Header.Height).
+					Msg("Peer fork batch has height gap, aborting")
+				return
+			}
 			if err := n.ch.ProcessBlock(blk); err != nil {
 				if errors.Is(err, chain.ErrBlockKnown) {
+					nextFrom++
 					continue
 				}
 				n.logger.Warn().Err(err).
@@ -834,7 +868,9 @@ func (n *Node) resolveFork(peerID peer.ID, failedHeight, peerTip uint64) {
 			}
 			n.pool.RemoveConfirmed(blk.Transactions)
 			token.ExtractAndStoreMetadata(n.tokenStore, blk)
+			nextFrom++
 		}
+		from = nextFrom
 	}
 
 	n.logger.Info().
@@ -1368,7 +1404,7 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 
 	syncStart := time.Now()
 
-	for from := localHeight + 1; from <= bestHeight; from += 500 {
+	for from := localHeight + 1; from <= bestHeight; {
 		max := uint32(500)
 		if from+uint64(max)-1 > bestHeight {
 			max = uint32(bestHeight - from + 1)
@@ -1385,10 +1421,26 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 			logger.Warn().Uint64("from", from).Msg("Peer returned empty batch for sub-chain, aborting sync")
 			break
 		}
+		if blocks[0].Header.Height != from {
+			logger.Warn().
+				Uint64("from", from).
+				Uint64("first", blocks[0].Header.Height).
+				Msg("Peer returned non-contiguous sub-chain batch, aborting sync")
+			break
+		}
 
+		nextFrom := from
 		for _, blk := range blocks {
+			if blk.Header.Height != nextFrom {
+				logger.Warn().
+					Uint64("expected", nextFrom).
+					Uint64("got", blk.Header.Height).
+					Msg("Peer sub-chain batch has height gap, aborting sync")
+				return
+			}
 			if err := ch.ProcessBlock(blk); err != nil {
 				if errors.Is(err, chain.ErrBlockKnown) {
+					nextFrom++
 					continue
 				}
 				if errors.Is(err, chain.ErrPrevNotFound) {
@@ -1402,7 +1454,9 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 				return
 			}
 			pool.RemoveConfirmed(blk.Transactions)
+			nextFrom++
 		}
+		from = nextFrom
 
 		synced := ch.Height() - localHeight
 		pct := float64(synced) / float64(total) * 100
@@ -1484,7 +1538,7 @@ func (n *Node) resolveSubChainFork(ch *chain.Chain, pool *mempool.Pool,
 		Uint64("fork_blocks", peerTip-ancestorHeight).
 		Msg("Sub-chain common ancestor found, downloading fork blocks")
 
-	for from := ancestorHeight + 1; from <= peerTip; from += 500 {
+	for from := ancestorHeight + 1; from <= peerTip; {
 		max := uint32(500)
 		if from+uint64(max)-1 > peerTip {
 			max = uint32(peerTip - from + 1)
@@ -1501,10 +1555,26 @@ func (n *Node) resolveSubChainFork(ch *chain.Chain, pool *mempool.Pool,
 			logger.Warn().Uint64("from", from).Msg("Peer returned empty batch during sub-chain fork sync, aborting")
 			return
 		}
+		if blocks[0].Header.Height != from {
+			logger.Warn().
+				Uint64("from", from).
+				Uint64("first", blocks[0].Header.Height).
+				Msg("Peer returned non-contiguous sub-chain fork batch, aborting")
+			return
+		}
 
+		nextFrom := from
 		for _, blk := range blocks {
+			if blk.Header.Height != nextFrom {
+				logger.Warn().
+					Uint64("expected", nextFrom).
+					Uint64("got", blk.Header.Height).
+					Msg("Peer sub-chain fork batch has height gap, aborting")
+				return
+			}
 			if err := ch.ProcessBlock(blk); err != nil {
 				if errors.Is(err, chain.ErrBlockKnown) {
+					nextFrom++
 					continue
 				}
 				logger.Warn().Err(err).
@@ -1513,7 +1583,9 @@ func (n *Node) resolveSubChainFork(ch *chain.Chain, pool *mempool.Pool,
 				return
 			}
 			pool.RemoveConfirmed(blk.Transactions)
+			nextFrom++
 		}
+		from = nextFrom
 	}
 
 	logger.Info().
