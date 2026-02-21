@@ -619,6 +619,10 @@ Wallet:
   --wallet            Enable wallet RPC endpoints
   --wallet-file       Wallet file path (unused — keystore is derived from datadir)
 
+Maintenance:
+  --clear-bans        Clear all peer bans on startup
+  --rebuild-indexes   Rebuild height and tx indexes from block data on startup
+
 Logging:
   --log-level         debug, info, warn, error (default: info)
   --log-file          Log to file instead of stdout
@@ -795,6 +799,9 @@ Only one `klingnetd` instance can open the same data directory at a time. Stop t
 
 **"Cannot bind to RPC address: address already in use"**
 Another process is already listening on the RPC port. Use `--rpc-port` to pick a different port.
+
+**Sync stalls at a specific height / "empty batch" from peers**
+The peer's height index may be corrupt (from a past crash or interrupted reorg). Run `klingnetd --rebuild-indexes` on the affected node to rebuild all height and transaction indexes from the block data. This walks the chain backward from the tip using PrevHash links and rewrites all indexes.
 
 **"Validator key file not found"**
 The path passed to `--validator-key` doesn't exist. Generate a key with `openssl rand -hex 32 > validator.key` or export one with `klingnet-cli wallet export-key`.

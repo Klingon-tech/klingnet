@@ -117,3 +117,24 @@ func (b *BadgerDB) ForEach(prefix []byte, fn func(key, value []byte) error) erro
 func (b *BadgerDB) Close() error {
 	return b.db.Close()
 }
+
+// NewBatch creates an atomic write batch backed by a single Badger transaction.
+func (b *BadgerDB) NewBatch() Batch {
+	return &badgerBatch{txn: b.db.NewTransaction(true)}
+}
+
+type badgerBatch struct {
+	txn *badger.Txn
+}
+
+func (bb *badgerBatch) Put(key, value []byte) error {
+	return bb.txn.Set(key, value)
+}
+
+func (bb *badgerBatch) Delete(key []byte) error {
+	return bb.txn.Delete(key)
+}
+
+func (bb *badgerBatch) Commit() error {
+	return bb.txn.Commit()
+}

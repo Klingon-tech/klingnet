@@ -61,3 +61,41 @@ func (m *MemoryDB) ForEach(prefix []byte, fn func(key, value []byte) error) erro
 func (m *MemoryDB) Close() error {
 	return nil
 }
+
+// NewBatch creates a buffered batch that applies all writes on Commit.
+func (m *MemoryDB) NewBatch() Batch {
+	return &memoryBatch{db: m}
+}
+
+type memoryBatchOp struct {
+	key    string
+	value  []byte // nil means delete
+}
+
+type memoryBatch struct {
+	db  *MemoryDB
+	ops []memoryBatchOp
+}
+
+func (mb *memoryBatch) Put(key, value []byte) error {
+	v := make([]byte, len(value))
+	copy(v, value)
+	mb.ops = append(mb.ops, memoryBatchOp{key: string(key), value: v})
+	return nil
+}
+
+func (mb *memoryBatch) Delete(key []byte) error {
+	mb.ops = append(mb.ops, memoryBatchOp{key: string(key), value: nil})
+	return nil
+}
+
+func (mb *memoryBatch) Commit() error {
+	for _, op := range mb.ops {
+		if op.value == nil {
+			delete(mb.db.data, op.key)
+		} else {
+			mb.db.data[op.key] = op.value
+		}
+	}
+	return nil
+}

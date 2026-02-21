@@ -13,3 +13,16 @@ type DB interface {
 	ForEach(prefix []byte, fn func(key, value []byte) error) error
 	Close() error
 }
+
+// Batch groups multiple writes into a single atomic operation.
+// All writes are committed together or not at all.
+type Batch interface {
+	Put(key, value []byte) error
+	Delete(key []byte) error
+	Commit() error
+}
+
+// Batcher is implemented by DBs that support atomic batch writes.
+type Batcher interface {
+	NewBatch() Batch
+}

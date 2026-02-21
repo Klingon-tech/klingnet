@@ -245,11 +245,6 @@ func (c *Chain) Reorg(newTipHash types.Hash) error {
 			return fmt.Errorf("difficulty check replay block at height %d: %w", blk.Header.Height, err)
 		}
 
-		// Enforce PoA signing frequency limit.
-		if err := c.checkSigningLimit(blk); err != nil {
-			return fmt.Errorf("signing limit replay block at height %d: %w", blk.Header.Height, err)
-		}
-
 		// Validate UTXO-dependent rules (tx signatures, maturity, tokens, stakes).
 		if err := c.validateBlockState(blk); err != nil {
 			return fmt.Errorf("state validation replay block at height %d: %w", blk.Header.Height, err)
@@ -263,17 +258,9 @@ func (c *Chain) Reorg(newTipHash types.Hash) error {
 		}
 		undo.BlockReward = blockReward
 
-		// PutBlock indexes txs and height; safe to call even if block was stored.
-		if err := c.blocks.PutBlock(blk); err != nil {
-			return fmt.Errorf("store new block: %w", err)
-		}
-
 		undoBytes, err := json.Marshal(undo)
 		if err != nil {
 			return fmt.Errorf("marshal undo: %w", err)
-		}
-		if err := c.blocks.PutUndo(blk.Hash(), undoBytes); err != nil {
-			return fmt.Errorf("store undo: %w", err)
 		}
 
 		// Cap block reward to respect max supply and prevent overflow.
@@ -284,8 +271,16 @@ func (c *Chain) Reorg(newTipHash types.Hash) error {
 			return fmt.Errorf("supply overflow at height %d: supply %d + reward %d", blk.Header.Height, c.state.Supply, blockReward)
 		}
 
-		c.state.Supply += blockReward
-		c.state.CumulativeDifficulty += blk.Header.Difficulty
+		newSupply := c.state.Supply + blockReward
+		newCumDiff := c.state.CumulativeDifficulty + blk.Header.Difficulty
+
+		// Atomically persist block, indexes, undo, and chain state.
+		if err := c.blocks.CommitBlock(blk, undoBytes, newSupply, newCumDiff); err != nil {
+			return fmt.Errorf("commit replay block at height %d: %w", blk.Header.Height, err)
+		}
+
+		c.state.Supply = newSupply
+		c.state.CumulativeDifficulty = newCumDiff
 
 		// Fire registration handler for any registrations in the new branch.
 		if c.registrationHandler != nil {
@@ -321,18 +316,12 @@ func (c *Chain) Reorg(newTipHash types.Hash) error {
 		}
 	}
 
-	// Update tip to new branch head.
+	// Update in-memory tip state (persistent state already committed
+	// atomically by CommitBlock during the replay loop above).
 	tip := newBranch[len(newBranch)-1]
-	tipHash := tip.Hash()
-	c.state.TipHash = tipHash
+	c.state.TipHash = tip.Hash()
 	c.state.Height = tip.Header.Height
 	c.state.TipTimestamp = tip.Header.Timestamp
-	if err := c.blocks.SetTip(tipHash, tip.Header.Height, c.state.Supply); err != nil {
-		return fmt.Errorf("set new tip: %w", err)
-	}
-	if err := c.blocks.SetCumulativeDifficulty(c.state.CumulativeDifficulty); err != nil {
-		return fmt.Errorf("set cumulative difficulty: %w", err)
-	}
 
 	// Reorg complete — remove the crash-recovery checkpoint.
 	if err := c.blocks.DeleteReorgCheckpoint(); err != nil {
@@ -474,9 +463,6 @@ func (c *Chain) rebuildReorg(newBranch []*block.Block, forkHeight uint64) error 
 			}
 			if err := c.verifyDifficulty(blk); err != nil {
 				return fmt.Errorf("rebuild reorg: difficulty check at height %d: %w", h, err)
-			}
-			if err := c.checkSigningLimit(blk); err != nil {
-				return fmt.Errorf("rebuild reorg: signing limit at height %d: %w", h, err)
 			}
 			if err := c.validateBlockState(blk); err != nil {
 				return fmt.Errorf("rebuild reorg: state validation at height %d: %w", h, err)

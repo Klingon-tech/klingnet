@@ -79,3 +79,84 @@ func (p *PrefixDB) DeleteAll() error {
 func (p *PrefixDB) Close() error {
 	return nil
 }
+
+// NewBatch creates a batch that prepends the prefix to all keys, delegating
+// to the inner DB's batch for atomic commits.
+func (p *PrefixDB) NewBatch() Batch {
+	batcher, ok := p.inner.(Batcher)
+	if !ok {
+		// Fallback: non-atomic batch using individual writes.
+		return &prefixFallbackBatch{db: p}
+	}
+	return &prefixBatch{inner: batcher.NewBatch(), prefix: p.prefix}
+}
+
+type prefixBatch struct {
+	inner  Batch
+	prefix []byte
+}
+
+func (pb *prefixBatch) Put(key, value []byte) error {
+	out := make([]byte, len(pb.prefix)+len(key))
+	copy(out, pb.prefix)
+	copy(out[len(pb.prefix):], key)
+	return pb.inner.Put(out, value)
+}
+
+func (pb *prefixBatch) Delete(key []byte) error {
+	out := make([]byte, len(pb.prefix)+len(key))
+	copy(out, pb.prefix)
+	copy(out[len(pb.prefix):], key)
+	return pb.inner.Delete(out)
+}
+
+func (pb *prefixBatch) Commit() error {
+	return pb.inner.Commit()
+}
+
+// prefixFallbackBatch buffers writes and applies them non-atomically
+// when the inner DB doesn't support batching.
+type prefixFallbackBatch struct {
+	db  *PrefixDB
+	ops []struct {
+		key   []byte
+		value []byte // nil means delete
+	}
+}
+
+func (fb *prefixFallbackBatch) Put(key, value []byte) error {
+	k := make([]byte, len(key))
+	copy(k, key)
+	v := make([]byte, len(value))
+	copy(v, value)
+	fb.ops = append(fb.ops, struct {
+		key   []byte
+		value []byte
+	}{k, v})
+	return nil
+}
+
+func (fb *prefixFallbackBatch) Delete(key []byte) error {
+	k := make([]byte, len(key))
+	copy(k, key)
+	fb.ops = append(fb.ops, struct {
+		key   []byte
+		value []byte
+	}{k, nil})
+	return nil
+}
+
+func (fb *prefixFallbackBatch) Commit() error {
+	for _, op := range fb.ops {
+		if op.value == nil {
+			if err := fb.db.Delete(op.key); err != nil {
+				return err
+			}
+		} else {
+			if err := fb.db.Put(op.key, op.value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}

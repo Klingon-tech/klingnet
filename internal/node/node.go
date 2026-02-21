@@ -968,7 +968,6 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 
 		// Pause block production while isolated (no peers).
 		if n.p2pNode != nil && n.p2pNode.PeerCount() == 0 {
-			n.logger.Debug().Msg("No peers connected, pausing block production")
 			continue
 		}
 
@@ -1014,12 +1013,6 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 			continue
 		}
 
-		// Check signing limit before producing.
-		if n.validatorKey != nil && n.ch.IsSigningLimitReached(n.validatorKey.PublicKey()) {
-			n.logger.Debug().Uint64("height", nextHeight).Msg("Signing limit reached, skipping slot")
-			continue
-		}
-
 		// Refresh now: the original may be stale after backup delay
 		// or re-checks. ProduceBlockAt also enforces monotonicity
 		// (>= parent timestamp + 1).
@@ -1032,10 +1025,6 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 		}
 
 		if err := n.ch.ProcessBlock(blk); err != nil {
-			if errors.Is(err, chain.ErrSigningLimitExceeded) {
-				n.logger.Debug().Msg("Signing limit reached, skipping slot")
-				continue
-			}
 			n.logger.Error().Err(err).Msg("Failed to process own block")
 			if errors.Is(err, chain.ErrCoinbaseNotMature) {
 				for _, t := range blk.Transactions[1:] {
@@ -1849,12 +1838,6 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 			continue
 		}
 
-		// Check signing limit before producing.
-		if n.validatorKey != nil && ch.IsSigningLimitReached(n.validatorKey.PublicKey()) {
-			logger.Debug().Uint64("height", nextHeight).Msg("Signing limit reached, skipping slot")
-			continue
-		}
-
 		// Refresh now after delays; monotonicity enforced by ProduceBlockAt.
 		now = uint64(time.Now().Unix())
 
@@ -1864,10 +1847,6 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 			continue
 		}
 		if err := ch.ProcessBlock(blk); err != nil {
-			if errors.Is(err, chain.ErrSigningLimitExceeded) {
-				logger.Debug().Msg("Signing limit reached, skipping slot")
-				continue
-			}
 			logger.Warn().Err(err).Msg("Block rejected")
 			if errors.Is(err, chain.ErrCoinbaseNotMature) {
 				for _, t := range blk.Transactions[1:] {

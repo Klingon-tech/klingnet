@@ -266,6 +266,84 @@ func (bs *BlockStore) DeleteReorgCheckpoint() error {
 	return bs.db.Delete(keyReorgCheckpoint)
 }
 
+// CommitBlock atomically writes a block and all its metadata in a single
+// batch transaction. This prevents index corruption on crashes — either all
+// writes succeed together or none are visible.
+func (bs *BlockStore) CommitBlock(blk *block.Block, undoBytes []byte, supply, cumDiff uint64) error {
+	data, err := json.Marshal(blk)
+	if err != nil {
+		return fmt.Errorf("block marshal: %w", err)
+	}
+
+	hash := blk.Hash()
+
+	batcher, ok := bs.db.(storage.Batcher)
+	if !ok {
+		// Fallback: non-atomic writes for DBs without batch support.
+		if err := bs.PutBlock(blk); err != nil {
+			return err
+		}
+		if err := bs.PutUndo(hash, undoBytes); err != nil {
+			return err
+		}
+		if err := bs.SetTip(hash, blk.Header.Height, supply); err != nil {
+			return err
+		}
+		return bs.SetCumulativeDifficulty(cumDiff)
+	}
+
+	batch := batcher.NewBatch()
+
+	// Block data by hash.
+	if err := batch.Put(blockKey(hash), data); err != nil {
+		return fmt.Errorf("batch block put: %w", err)
+	}
+
+	// Height index.
+	if err := batch.Put(heightKey(blk.Header.Height), hash[:]); err != nil {
+		return fmt.Errorf("batch height index: %w", err)
+	}
+
+	// Transaction indexes.
+	for _, t := range blk.Transactions {
+		txHash := t.Hash()
+		val := make([]byte, 8+types.HashSize)
+		binary.BigEndian.PutUint64(val[:8], blk.Header.Height)
+		copy(val[8:], hash[:])
+		if err := batch.Put(txKey(txHash), val); err != nil {
+			return fmt.Errorf("batch tx index %s: %w", txHash, err)
+		}
+	}
+
+	// Undo data.
+	if err := batch.Put(undoKey(hash), undoBytes); err != nil {
+		return fmt.Errorf("batch undo: %w", err)
+	}
+
+	// Tip hash, height, supply.
+	if err := batch.Put(keyTipHash, hash[:]); err != nil {
+		return fmt.Errorf("batch tip hash: %w", err)
+	}
+	var heightBuf, supplyBuf [8]byte
+	binary.BigEndian.PutUint64(heightBuf[:], blk.Header.Height)
+	if err := batch.Put(keyHeight, heightBuf[:]); err != nil {
+		return fmt.Errorf("batch tip height: %w", err)
+	}
+	binary.BigEndian.PutUint64(supplyBuf[:], supply)
+	if err := batch.Put(keySupply, supplyBuf[:]); err != nil {
+		return fmt.Errorf("batch supply: %w", err)
+	}
+
+	// Cumulative difficulty.
+	var diffBuf [8]byte
+	binary.BigEndian.PutUint64(diffBuf[:], cumDiff)
+	if err := batch.Put(keyCumDifficulty, diffBuf[:]); err != nil {
+		return fmt.Errorf("batch cumulative difficulty: %w", err)
+	}
+
+	return batch.Commit()
+}
+
 // RebuildIndexes walks the chain backward from the tip using PrevHash links
 // and rebuilds all height and transaction indexes. This fixes corrupt height
 // indexes caused by crashes or partial reorgs.

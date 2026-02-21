@@ -139,18 +139,9 @@ func (c *Chain) ProcessBlock(blk *block.Block) error {
 	}
 	undo.BlockReward = blockReward
 
-	// Persist the block.
-	if err := c.blocks.PutBlock(blk); err != nil {
-		return fmt.Errorf("store block: %w", err)
-	}
-
-	// Persist undo data.
 	undoBytes, err := json.Marshal(undo)
 	if err != nil {
 		return fmt.Errorf("marshal undo: %w", err)
-	}
-	if err := c.blocks.PutUndo(hash, undoBytes); err != nil {
-		return fmt.Errorf("store undo: %w", err)
 	}
 
 	// Cap block reward to respect max supply.
@@ -158,20 +149,21 @@ func (c *Chain) ProcessBlock(blk *block.Block) error {
 		blockReward = c.maxSupply - c.state.Supply
 	}
 
-	// Track newly minted coins (block reward only; fees are recycled).
-	c.state.Supply += blockReward
-	c.state.CumulativeDifficulty += blk.Header.Difficulty
+	newSupply := c.state.Supply + blockReward
+	newCumDiff := c.state.CumulativeDifficulty + blk.Header.Difficulty
 
-	// Update chain tip.
+	// Atomically persist block data, indexes, undo, tip, and cumulative
+	// difficulty in a single batch. Prevents index corruption on crash.
+	if err := c.blocks.CommitBlock(blk, undoBytes, newSupply, newCumDiff); err != nil {
+		return fmt.Errorf("commit block: %w", err)
+	}
+
+	// Update in-memory state (only after successful persist).
+	c.state.Supply = newSupply
+	c.state.CumulativeDifficulty = newCumDiff
 	c.state.TipHash = hash
 	c.state.Height = blk.Header.Height
 	c.state.TipTimestamp = blk.Header.Timestamp
-	if err := c.blocks.SetTip(hash, blk.Header.Height, c.state.Supply); err != nil {
-		return fmt.Errorf("set tip: %w", err)
-	}
-	if err := c.blocks.SetCumulativeDifficulty(c.state.CumulativeDifficulty); err != nil {
-		return fmt.Errorf("set cumulative difficulty: %w", err)
-	}
 
 	// Scan for sub-chain registration outputs.
 	if c.registrationHandler != nil {
