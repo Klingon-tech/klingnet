@@ -2,6 +2,7 @@
 package chain
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -197,6 +198,12 @@ func (c *Chain) Supply() uint64 {
 	return c.state.Supply
 }
 
+// RebuildIndexes delegates to BlockStore.RebuildIndexes to rebuild
+// all height and transaction indexes by walking the chain from tip.
+func (c *Chain) RebuildIndexes() (int, error) {
+	return c.blocks.RebuildIndexes()
+}
+
 // SetRegistrationHandler sets the callback for ScriptTypeRegister outputs in confirmed blocks.
 func (c *Chain) SetRegistrationHandler(fn RegistrationHandler) {
 	c.registrationHandler = fn
@@ -266,7 +273,8 @@ func (c *Chain) RebuildUTXOs() error {
 		return fmt.Errorf("clear utxo set: %w", err)
 	}
 
-	// Replay all blocks from genesis to current tip.
+	// Replay all blocks from genesis to current tip, storing undo data
+	// so that future reorgs can revert blocks properly.
 	var supply uint64
 	var cumDiff uint64
 	for h := uint64(0); h <= c.state.Height; h++ {
@@ -275,11 +283,26 @@ func (c *Chain) RebuildUTXOs() error {
 			return fmt.Errorf("load block at height %d: %w", h, err)
 		}
 
-		if err := c.applyBlock(blk); err != nil {
+		blockReward := c.computeBlockReward(blk)
+
+		undo, err := c.applyBlockWithUndo(blk)
+		if err != nil {
 			return fmt.Errorf("replay block at height %d: %w", h, err)
 		}
+		undo.BlockReward = blockReward
 
-		supply += c.computeBlockReward(blk)
+		undoBytes, err := json.Marshal(undo)
+		if err != nil {
+			return fmt.Errorf("marshal undo at height %d: %w", h, err)
+		}
+		if err := c.blocks.PutUndo(blk.Hash(), undoBytes); err != nil {
+			return fmt.Errorf("store undo at height %d: %w", h, err)
+		}
+
+		if c.maxSupply > 0 && supply+blockReward > c.maxSupply {
+			blockReward = c.maxSupply - supply
+		}
+		supply += blockReward
 		cumDiff += blk.Header.Difficulty
 	}
 

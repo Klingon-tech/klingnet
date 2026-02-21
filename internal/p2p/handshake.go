@@ -57,8 +57,8 @@ func (n *Node) registerHandshakeHandler() {
 			logger.Warn().
 				Str("peer", remotePeer.String()[:16]).
 				Str("reason", reason).
-				Msg("Handshake rejected, banning peer")
-			if n.BanManager != nil {
+				Msg("Handshake rejected")
+			if n.BanManager != nil && !n.isSeedPeer(remotePeer) {
 				n.BanManager.RecordOffense(remotePeer, PenaltyHandshakeFail, reason)
 			}
 			n.DisconnectPeer(remotePeer)
@@ -76,7 +76,7 @@ func (n *Node) doHandshake(peerID peer.ID) {
 	stream, err := n.host.NewStream(ctx, peerID, HandshakeProtocol)
 	if err != nil {
 		logger.Warn().Str("peer", peerID.String()[:16]).Msg("Peer does not support handshake protocol, disconnecting")
-		if n.BanManager != nil {
+		if n.BanManager != nil && !n.isSeedPeer(peerID) {
 			n.BanManager.RecordOffense(peerID, PenaltyHandshakeFail, "no handshake support")
 		}
 		n.DisconnectPeer(peerID)
@@ -108,8 +108,8 @@ func (n *Node) doHandshake(peerID peer.ID) {
 		logger.Warn().
 			Str("peer", peerID.String()[:16]).
 			Str("reason", reason).
-			Msg("Handshake rejected, banning peer")
-		if n.BanManager != nil {
+			Msg("Handshake rejected")
+		if n.BanManager != nil && !n.isSeedPeer(peerID) {
 			n.BanManager.RecordOffense(peerID, PenaltyHandshakeFail, reason)
 		}
 		n.DisconnectPeer(peerID)

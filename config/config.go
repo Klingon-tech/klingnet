@@ -50,6 +50,9 @@ type Config struct {
 
 	// Logging
 	Log LogConfig
+
+	// Maintenance (not persisted in config file)
+	RebuildIndexes bool
 }
 
 // MaxSubChainMiners is the hard cap on concurrent sub-chain PoW miners.
@@ -80,6 +83,7 @@ type P2PConfig struct {
 	MaxPeers   int      `conf:"p2p.maxpeers"`
 	NoDiscover bool     `conf:"p2p.nodiscover"`
 	DHTServer  bool     `conf:"p2p.dhtserver"` // Run DHT in server mode (for seeds/validators)
+	ClearBans  bool     // Clear all peer bans on startup (not persisted in config file).
 }
 
 // RPCConfig holds RPC server settings.

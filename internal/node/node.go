@@ -189,6 +189,20 @@ func New(cfg *config.Config) (*Node, error) {
 			Msg("Chain resumed from database")
 	}
 
+	// ── 7b. Rebuild indexes (if requested) ─────────────────────────
+	if cfg.RebuildIndexes {
+		logger.Info().Msg("Rebuilding height and tx indexes...")
+		count, err := ch.RebuildIndexes()
+		if err != nil {
+			db.Close()
+			if validatorKey != nil {
+				validatorKey.Zero()
+			}
+			return nil, fmt.Errorf("rebuild indexes: %w", err)
+		}
+		logger.Info().Int("blocks", count).Msg("Indexes rebuilt successfully")
+	}
+
 	// ── 8. Mempool ──────────────────────────────────────────────────
 	adapter := miner.NewUTXOAdapter(utxoStore)
 	pool := mempool.New(adapter, 5000)
@@ -226,6 +240,7 @@ func New(cfg *config.Config) (*Node, error) {
 			DHTServer:  cfg.P2P.DHTServer,
 			NetworkID:  genesis.ChainID,
 			DataDir:    cfg.ChainDataDir(),
+			ClearBans:  cfg.P2P.ClearBans,
 		})
 
 		genesisHash, _ := genesis.Hash()
@@ -619,6 +634,13 @@ func (n *Node) runSyncLoop() {
 	}
 }
 
+// syncPeer tracks a peer's chain state for sync candidate selection.
+type syncPeer struct {
+	id      peer.ID
+	height  uint64
+	tipHash string
+}
+
 func (n *Node) runStartupSync() {
 	if n.p2pNode == nil || n.syncer == nil {
 		return
@@ -634,11 +656,6 @@ func (n *Node) runStartupSync() {
 	}
 
 	// Query peers for height and collect candidates sorted by height.
-	type syncPeer struct {
-		id      peer.ID
-		height  uint64
-		tipHash string
-	}
 	var candidates []syncPeer
 	limit := len(peers)
 	if limit > 8 {
@@ -678,7 +695,7 @@ func (n *Node) runStartupSync() {
 				Str("local_tip", localTip[:16]+"...").
 				Str("peer_tip", best.tipHash[:16]+"...").
 				Msg("Same-height fork detected, resolving")
-			n.resolveFork(best.id, localHeight, best.height)
+			n.resolveFork(candidates, localHeight, best.height)
 		}
 		return
 	}
@@ -749,7 +766,7 @@ func (n *Node) runStartupSync() {
 					n.logger.Info().
 						Uint64("height", blk.Header.Height).
 						Msg("Fork detected during sync, resolving")
-					n.resolveFork(currentPeer, blk.Header.Height, best.height)
+					n.resolveFork(candidates[peerIdx:], blk.Header.Height, best.height)
 					return
 				}
 				n.logger.Warn().Err(err).Uint64("height", blk.Header.Height).Msg("Sync block failed")
@@ -787,20 +804,36 @@ func (n *Node) runStartupSync() {
 		Msg("Sync complete")
 }
 
-func (n *Node) resolveFork(peerID peer.ID, failedHeight, peerTip uint64) {
+func (n *Node) resolveFork(candidates []syncPeer, failedHeight, peerTip uint64) {
+	if len(candidates) == 0 {
+		n.logger.Warn().Msg("Fork resolution failed: no candidates")
+		return
+	}
+
 	searchFrom := failedHeight - 1
 	if searchFrom > n.ch.Height() {
 		searchFrom = n.ch.Height()
 	}
 
+	// ── Phase 1: Find common ancestor ──
 	var ancestorHeight uint64
 	found := false
+	peerIdx := 0
 
 	for h := searchFrom; ; h-- {
+		currentPeer := candidates[peerIdx].id
 		reqCtx, cancel := context.WithTimeout(n.ctx, 5*time.Second)
-		peerBlocks, err := n.syncer.RequestBlocks(reqCtx, peerID, h, 1)
+		peerBlocks, err := n.syncer.RequestBlocks(reqCtx, currentPeer, h, 1)
 		cancel()
+
 		if err != nil || len(peerBlocks) == 0 {
+			// Peer failed — try next peer for this height.
+			if peerIdx+1 < len(candidates) {
+				peerIdx++
+				continue
+			}
+			// All peers failed for this height — move down.
+			peerIdx = 0
 			if h == 0 {
 				break
 			}
@@ -809,6 +842,7 @@ func (n *Node) resolveFork(peerID peer.ID, failedHeight, peerTip uint64) {
 
 		localBlk, err := n.ch.GetBlockByHeight(h)
 		if err != nil {
+			peerIdx = 0
 			if h == 0 {
 				break
 			}
@@ -821,8 +855,9 @@ func (n *Node) resolveFork(peerID peer.ID, failedHeight, peerTip uint64) {
 			break
 		}
 
+		peerIdx = 0
 		if h == 0 {
-			break // Reached genesis, prevent uint64 underflow.
+			break
 		}
 	}
 
@@ -839,6 +874,10 @@ func (n *Node) resolveFork(peerID peer.ID, failedHeight, peerTip uint64) {
 		Uint64("fork_blocks", peerTip-ancestorHeight).
 		Msg("Common ancestor found, downloading fork blocks")
 
+	// ── Phase 2: Download fork blocks with peer rotation ──
+	peerIdx = 0
+	currentPeer := candidates[peerIdx].id
+
 	for from := ancestorHeight + 1; from <= peerTip; {
 		max := uint32(500)
 		if from+uint64(max)-1 > peerTip {
@@ -846,21 +885,27 @@ func (n *Node) resolveFork(peerID peer.ID, failedHeight, peerTip uint64) {
 		}
 
 		reqCtx, cancel := context.WithTimeout(n.ctx, 30*time.Second)
-		blocks, err := n.syncer.RequestBlocks(reqCtx, peerID, from, max)
+		blocks, err := n.syncer.RequestBlocks(reqCtx, currentPeer, from, max)
 		cancel()
-		if err != nil {
-			n.logger.Warn().Err(err).Uint64("from", from).Msg("Fork sync request failed")
-			return
-		}
-		if len(blocks) == 0 {
-			n.logger.Warn().Uint64("from", from).Msg("Peer returned empty batch during fork sync, aborting")
-			return
-		}
-		if blocks[0].Header.Height != from {
-			n.logger.Warn().
-				Uint64("from", from).
-				Uint64("first", blocks[0].Header.Height).
-				Msg("Peer returned non-contiguous fork batch, aborting")
+
+		if err != nil || len(blocks) == 0 || blocks[0].Header.Height != from {
+			reason := "empty batch"
+			if err != nil {
+				reason = err.Error()
+			} else if len(blocks) > 0 {
+				reason = fmt.Sprintf("non-contiguous (wanted %d, got %d)", from, blocks[0].Header.Height)
+			}
+			peerIdx++
+			if peerIdx < len(candidates) {
+				currentPeer = candidates[peerIdx].id
+				n.logger.Warn().
+					Uint64("from", from).
+					Str("reason", reason).
+					Str("next_peer", currentPeer.String()[:16]+"...").
+					Msg("Fork sync peer failed, trying next peer")
+				continue
+			}
+			n.logger.Warn().Uint64("from", from).Str("reason", reason).Msg("Fork sync: all peers exhausted")
 			return
 		}
 
@@ -870,7 +915,7 @@ func (n *Node) resolveFork(peerID peer.ID, failedHeight, peerTip uint64) {
 				n.logger.Warn().
 					Uint64("expected", nextFrom).
 					Uint64("got", blk.Header.Height).
-					Msg("Peer fork batch has height gap, aborting")
+					Msg("Fork sync batch has height gap, aborting")
 				return
 			}
 			if err := n.ch.ProcessBlock(blk); err != nil {
@@ -921,6 +966,12 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 		case <-time.After(sleepDur):
 		}
 
+		// Pause block production while isolated (no peers).
+		if n.p2pNode != nil && n.p2pNode.PeerCount() == 0 {
+			n.logger.Debug().Msg("No peers connected, pausing block production")
+			continue
+		}
+
 		nextHeight := n.ch.Height() + 1
 		now := uint64(time.Now().Unix())
 
@@ -963,6 +1014,12 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 			continue
 		}
 
+		// Check signing limit before producing.
+		if n.validatorKey != nil && n.ch.IsSigningLimitReached(n.validatorKey.PublicKey()) {
+			n.logger.Debug().Uint64("height", nextHeight).Msg("Signing limit reached, skipping slot")
+			continue
+		}
+
 		// Refresh now: the original may be stale after backup delay
 		// or re-checks. ProduceBlockAt also enforces monotonicity
 		// (>= parent timestamp + 1).
@@ -975,6 +1032,10 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 		}
 
 		if err := n.ch.ProcessBlock(blk); err != nil {
+			if errors.Is(err, chain.ErrSigningLimitExceeded) {
+				n.logger.Debug().Msg("Signing limit reached, skipping slot")
+				continue
+			}
 			n.logger.Error().Err(err).Msg("Failed to process own block")
 			if errors.Is(err, chain.ErrCoinbaseNotMature) {
 				for _, t := range blk.Transactions[1:] {
@@ -1315,9 +1376,23 @@ func (n *Node) handleSubChainSpawn(chainID types.ChainID, sr *subchain.SpawnResu
 			}
 		})
 
-		// Initial sync.
-		go n.runSubChainSync(sr.Chain, sr.Pool, idHex, scLog)
+		// Sync first, then start miners. This prevents the miner from
+		// producing blocks on a stale fork while the sync is catching up.
+		go func() {
+			n.runSubChainSync(sr.Chain, sr.Pool, idHex, scLog)
+			n.startSubChainMiners(chainID, sr, scPoA, scTracker, mineFilter, scCoinbase, scLog)
+		}()
+	} else {
+		// No P2P — start miners directly (test/solo mode).
+		n.startSubChainMiners(chainID, sr, scPoA, scTracker, mineFilter, scCoinbase, scLog)
 	}
+}
+
+// startSubChainMiners starts all miners and heartbeat for a sub-chain.
+// Called after sub-chain sync completes (or immediately if P2P is disabled).
+func (n *Node) startSubChainMiners(chainID types.ChainID, sr *subchain.SpawnResult,
+	scPoA *consensus.PoA, scTracker *consensus.ValidatorTracker,
+	mineFilter *subchain.MineFilter, scCoinbase types.Address, scLog zerolog.Logger) {
 
 	// Start PoW miner if listed.
 	if !isPoW(sr.Engine) && mineFilter != nil && mineFilter.ShouldMine(chainID) {
@@ -1370,11 +1445,6 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 	}
 
 	// Query peers for sub-chain height and collect candidates sorted by height.
-	type syncPeer struct {
-		id      peer.ID
-		height  uint64
-		tipHash string
-	}
 	var candidates []syncPeer
 	limit := len(peers)
 	if limit > 8 {
@@ -1410,7 +1480,7 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 			logger.Info().
 				Uint64("height", localHeight).
 				Msg("Same-height sub-chain fork detected, resolving")
-			n.resolveSubChainFork(ch, pool, best.id, chainIDHex, localHeight, best.height, logger)
+			n.resolveSubChainFork(ch, pool, candidates, chainIDHex, localHeight, best.height, logger)
 		}
 		return
 	}
@@ -1480,7 +1550,7 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 					logger.Info().
 						Uint64("height", blk.Header.Height).
 						Msg("Fork detected during sub-chain sync, resolving")
-					n.resolveSubChainFork(ch, pool, currentPeer, chainIDHex, blk.Header.Height, best.height, logger)
+					n.resolveSubChainFork(ch, pool, candidates[peerIdx:], chainIDHex, blk.Header.Height, best.height, logger)
 					return
 				}
 				logger.Warn().Err(err).Uint64("height", blk.Header.Height).Msg("Sub-chain sync block failed")
@@ -1518,21 +1588,35 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 }
 
 func (n *Node) resolveSubChainFork(ch *chain.Chain, pool *mempool.Pool,
-	peerID peer.ID, chainIDHex string, failedHeight, peerTip uint64, logger zerolog.Logger) {
+	candidates []syncPeer, chainIDHex string, failedHeight, peerTip uint64, logger zerolog.Logger) {
+
+	if len(candidates) == 0 {
+		logger.Warn().Msg("Sub-chain fork resolution failed: no candidates")
+		return
+	}
 
 	searchFrom := failedHeight - 1
 	if searchFrom > ch.Height() {
 		searchFrom = ch.Height()
 	}
 
+	// ── Phase 1: Find common ancestor ──
 	var ancestorHeight uint64
 	found := false
+	peerIdx := 0
 
 	for h := searchFrom; ; h-- {
+		currentPeer := candidates[peerIdx].id
 		reqCtx, cancel := context.WithTimeout(n.ctx, 5*time.Second)
-		peerBlocks, err := n.syncer.RequestSubChainBlocks(reqCtx, peerID, chainIDHex, h, 1)
+		peerBlocks, err := n.syncer.RequestSubChainBlocks(reqCtx, currentPeer, chainIDHex, h, 1)
 		cancel()
+
 		if err != nil || len(peerBlocks) == 0 {
+			if peerIdx+1 < len(candidates) {
+				peerIdx++
+				continue
+			}
+			peerIdx = 0
 			if h == 0 {
 				break
 			}
@@ -1541,6 +1625,7 @@ func (n *Node) resolveSubChainFork(ch *chain.Chain, pool *mempool.Pool,
 
 		localBlk, err := ch.GetBlockByHeight(h)
 		if err != nil {
+			peerIdx = 0
 			if h == 0 {
 				break
 			}
@@ -1553,8 +1638,9 @@ func (n *Node) resolveSubChainFork(ch *chain.Chain, pool *mempool.Pool,
 			break
 		}
 
+		peerIdx = 0
 		if h == 0 {
-			break // Reached genesis, prevent uint64 underflow.
+			break
 		}
 	}
 
@@ -1571,6 +1657,10 @@ func (n *Node) resolveSubChainFork(ch *chain.Chain, pool *mempool.Pool,
 		Uint64("fork_blocks", peerTip-ancestorHeight).
 		Msg("Sub-chain common ancestor found, downloading fork blocks")
 
+	// ── Phase 2: Download fork blocks with peer rotation ──
+	peerIdx = 0
+	currentPeer := candidates[peerIdx].id
+
 	for from := ancestorHeight + 1; from <= peerTip; {
 		max := uint32(500)
 		if from+uint64(max)-1 > peerTip {
@@ -1578,21 +1668,27 @@ func (n *Node) resolveSubChainFork(ch *chain.Chain, pool *mempool.Pool,
 		}
 
 		reqCtx, cancel := context.WithTimeout(n.ctx, 30*time.Second)
-		blocks, err := n.syncer.RequestSubChainBlocks(reqCtx, peerID, chainIDHex, from, max)
+		blocks, err := n.syncer.RequestSubChainBlocks(reqCtx, currentPeer, chainIDHex, from, max)
 		cancel()
-		if err != nil {
-			logger.Warn().Err(err).Uint64("from", from).Msg("Sub-chain fork sync request failed")
-			return
-		}
-		if len(blocks) == 0 {
-			logger.Warn().Uint64("from", from).Msg("Peer returned empty batch during sub-chain fork sync, aborting")
-			return
-		}
-		if blocks[0].Header.Height != from {
-			logger.Warn().
-				Uint64("from", from).
-				Uint64("first", blocks[0].Header.Height).
-				Msg("Peer returned non-contiguous sub-chain fork batch, aborting")
+
+		if err != nil || len(blocks) == 0 || blocks[0].Header.Height != from {
+			reason := "empty batch"
+			if err != nil {
+				reason = err.Error()
+			} else if len(blocks) > 0 {
+				reason = fmt.Sprintf("non-contiguous (wanted %d, got %d)", from, blocks[0].Header.Height)
+			}
+			peerIdx++
+			if peerIdx < len(candidates) {
+				currentPeer = candidates[peerIdx].id
+				logger.Warn().
+					Uint64("from", from).
+					Str("reason", reason).
+					Str("next_peer", currentPeer.String()[:16]+"...").
+					Msg("Sub-chain fork sync peer failed, trying next peer")
+				continue
+			}
+			logger.Warn().Uint64("from", from).Str("reason", reason).Msg("Sub-chain fork sync: all peers exhausted")
 			return
 		}
 
@@ -1602,7 +1698,7 @@ func (n *Node) resolveSubChainFork(ch *chain.Chain, pool *mempool.Pool,
 				logger.Warn().
 					Uint64("expected", nextFrom).
 					Uint64("got", blk.Header.Height).
-					Msg("Peer sub-chain fork batch has height gap, aborting")
+					Msg("Sub-chain fork sync batch has height gap, aborting")
 				return
 			}
 			if err := ch.ProcessBlock(blk); err != nil {
@@ -1714,6 +1810,11 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 		case <-time.After(sleepDur):
 		}
 
+		// Pause block production while isolated (no peers).
+		if n.p2pNode != nil && n.p2pNode.PeerCount() == 0 {
+			continue
+		}
+
 		nextHeight := ch.Height() + 1
 		now := uint64(time.Now().Unix())
 
@@ -1748,6 +1849,12 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 			continue
 		}
 
+		// Check signing limit before producing.
+		if n.validatorKey != nil && ch.IsSigningLimitReached(n.validatorKey.PublicKey()) {
+			logger.Debug().Uint64("height", nextHeight).Msg("Signing limit reached, skipping slot")
+			continue
+		}
+
 		// Refresh now after delays; monotonicity enforced by ProduceBlockAt.
 		now = uint64(time.Now().Unix())
 
@@ -1757,6 +1864,10 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 			continue
 		}
 		if err := ch.ProcessBlock(blk); err != nil {
+			if errors.Is(err, chain.ErrSigningLimitExceeded) {
+				logger.Debug().Msg("Signing limit reached, skipping slot")
+				continue
+			}
 			logger.Warn().Err(err).Msg("Block rejected")
 			if errors.Is(err, chain.ErrCoinbaseNotMature) {
 				for _, t := range blk.Transactions[1:] {
@@ -1806,6 +1917,16 @@ func (n *Node) runSubChainMiner(ctx context.Context, m *miner.Miner, ch *chain.C
 			logger.Info().Msg("Sub-chain miner stopped")
 			return
 		default:
+		}
+
+		// Pause block production while isolated (no peers).
+		if n.p2pNode != nil && n.p2pNode.PeerCount() == 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+			continue
 		}
 
 		// If the chain tip's timestamp is ahead of wall clock, wait for

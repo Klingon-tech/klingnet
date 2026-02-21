@@ -47,6 +47,10 @@ type Flags struct {
 	SyncSubChains string
 	MineSubChains string
 
+	// Maintenance
+	ClearBans      bool
+	RebuildIndexes bool
+
 	// Logging
 	LogLevel string
 	LogFile  string
@@ -110,6 +114,10 @@ func ParseFlags() *Flags {
 	// Sub-chain sync
 	fs.StringVar(&f.SyncSubChains, "sync-subchains", "", "Which sub-chains to sync: all, none (default), or comma-separated chain IDs")
 	fs.StringVar(&f.MineSubChains, "mine-subchains", "", "Comma-separated PoW sub-chain IDs to mine (max 8)")
+
+	// Maintenance
+	fs.BoolVar(&f.ClearBans, "clear-bans", false, "Clear all peer bans on startup")
+	fs.BoolVar(&f.RebuildIndexes, "rebuild-indexes", false, "Rebuild height and tx indexes from block data on startup")
 
 	// Logging
 	fs.StringVar(&f.LogLevel, "log-level", "", "Log level (debug, info, warn, error)")
@@ -184,6 +192,12 @@ func ApplyFlags(cfg *Config, f *Flags) {
 	}
 	if f.DHTServer {
 		cfg.P2P.DHTServer = true
+	}
+	if f.ClearBans {
+		cfg.P2P.ClearBans = true
+	}
+	if f.RebuildIndexes {
+		cfg.RebuildIndexes = true
 	}
 
 	// RPC
@@ -314,6 +328,10 @@ Sub-chain Options:
   --sync-subchains  Which sub-chains to sync: all, none (default), or
                     comma-separated chain ID hex strings
   --mine-subchains  Comma-separated PoW sub-chain IDs to mine (max 8)
+
+Maintenance Options:
+  --clear-bans        Clear all peer bans on startup
+  --rebuild-indexes   Rebuild height and tx indexes from block data
 
 Logging Options:
   --log-level     Log level: debug, info, warn, error (default: info)

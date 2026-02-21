@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Klingon-tech/klingnet-chain/config"
+	"github.com/Klingon-tech/klingnet-chain/internal/consensus"
 	"github.com/Klingon-tech/klingnet-chain/internal/token"
 	"github.com/Klingon-tech/klingnet-chain/internal/utxo"
 	"github.com/Klingon-tech/klingnet-chain/pkg/block"
@@ -28,6 +30,7 @@ var (
 	ErrInvalidStakeAmount     = errors.New("invalid stake amount")
 	ErrBadCoinbaseTx          = errors.New("invalid coinbase transaction")
 	ErrCoinbaseRewardExceeded = errors.New("coinbase reward exceeds consensus limit")
+	ErrSigningLimitExceeded   = errors.New("validator exceeded signing limit")
 )
 
 // ProcessBlock validates a block and applies it to the chain.
@@ -73,6 +76,12 @@ func (c *Chain) ProcessBlock(blk *block.Block) error {
 	if err := c.validator.ValidateBlock(blk); err != nil {
 		return fmt.Errorf("validate: %w", err)
 	}
+
+	// Note: Signing limit is NOT checked here on the fast path.
+	// Blocks received from peers during sync were already accepted by the network.
+	// The signing limit is enforced in:
+	//   - Miner pre-check (IsSigningLimitReached) — prevents local violations
+	//   - Reorg replay — prevents rogue validators from forcing reorgs
 
 	// Block timestamp bounds: reject blocks too far in the future.
 	maxTime := uint64(time.Now().Add(2 * time.Minute).Unix())
@@ -506,4 +515,74 @@ func (c *Chain) checkCoinbaseMaturity(blk *block.Block) error {
 		}
 	}
 	return nil
+}
+
+// checkSigningLimit enforces the PoA signing frequency rule: a validator
+// may sign at most 1 block in any consecutive window of N/2+1 blocks,
+// where N is the number of active validators. Returns nil for non-PoA chains
+// or single-validator setups.
+func (c *Chain) checkSigningLimit(blk *block.Block) error {
+	poa, ok := c.engine.(*consensus.PoA)
+	if !ok {
+		return nil
+	}
+	limit := poa.SigningLimit()
+	if limit == 0 {
+		return nil
+	}
+	signer := poa.IdentifySigner(blk.Header)
+	if signer == nil {
+		return nil
+	}
+
+	// Check the last (limit - 1) blocks for the same signer.
+	h := blk.Header.Height
+	for i := 1; i < limit; i++ {
+		if h < uint64(i) {
+			break
+		}
+		prev, err := c.blocks.GetBlockByHeight(h - uint64(i))
+		if err != nil {
+			continue
+		}
+		prevSigner := poa.IdentifySigner(prev.Header)
+		if prevSigner != nil && bytes.Equal(signer, prevSigner) {
+			return fmt.Errorf("%w: signer appeared at height %d and %d (window=%d)",
+				ErrSigningLimitExceeded, h-uint64(i), h, limit)
+		}
+	}
+	return nil
+}
+
+// IsSigningLimitReached checks whether the given validator pubkey has signed
+// a block recently enough that producing another block would violate the
+// signing limit. Used by the miner to skip slots proactively.
+func (c *Chain) IsSigningLimitReached(pubkey []byte) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	poa, ok := c.engine.(*consensus.PoA)
+	if !ok {
+		return false
+	}
+	limit := poa.SigningLimit()
+	if limit == 0 {
+		return false
+	}
+
+	h := c.state.Height
+	for i := 0; i < limit-1; i++ {
+		if h < uint64(i+1) {
+			break
+		}
+		prev, err := c.blocks.GetBlockByHeight(h - uint64(i))
+		if err != nil {
+			continue
+		}
+		prevSigner := poa.IdentifySigner(prev.Header)
+		if prevSigner != nil && bytes.Equal(pubkey, prevSigner) {
+			return true
+		}
+	}
+	return false
 }

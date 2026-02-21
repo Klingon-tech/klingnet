@@ -265,3 +265,57 @@ func (bs *BlockStore) GetReorgCheckpoint() (uint64, bool) {
 func (bs *BlockStore) DeleteReorgCheckpoint() error {
 	return bs.db.Delete(keyReorgCheckpoint)
 }
+
+// RebuildIndexes walks the chain backward from the tip using PrevHash links
+// and rebuilds all height and transaction indexes. This fixes corrupt height
+// indexes caused by crashes or partial reorgs.
+func (bs *BlockStore) RebuildIndexes() (int, error) {
+	tipHash, height, _, err := bs.GetTip()
+	if err != nil {
+		return 0, fmt.Errorf("get tip: %w", err)
+	}
+	if tipHash.IsZero() {
+		return 0, nil // Empty chain.
+	}
+
+	// Walk backward from tip to genesis, collecting (height → block).
+	chain := make(map[uint64]*block.Block)
+	hash := tipHash
+	for h := int64(height); h >= 0; h-- {
+		blk, err := bs.GetBlock(hash)
+		if err != nil {
+			return 0, fmt.Errorf("load block %s at expected height %d: %w", hash, h, err)
+		}
+		if blk.Header.Height != uint64(h) {
+			return 0, fmt.Errorf("height mismatch: block %s has height %d, expected %d", hash, blk.Header.Height, h)
+		}
+		chain[uint64(h)] = blk
+		hash = blk.Header.PrevHash
+	}
+
+	// Write indexes for every block.
+	count := 0
+	for h := uint64(0); h <= height; h++ {
+		blk := chain[h]
+		blkHash := blk.Hash()
+
+		// Height index.
+		if err := bs.db.Put(heightKey(h), blkHash[:]); err != nil {
+			return count, fmt.Errorf("write height index %d: %w", h, err)
+		}
+
+		// Transaction indexes.
+		for _, t := range blk.Transactions {
+			txHash := t.Hash()
+			val := make([]byte, 8+types.HashSize)
+			binary.BigEndian.PutUint64(val[:8], h)
+			copy(val[8:], blkHash[:])
+			if err := bs.db.Put(txKey(txHash), val); err != nil {
+				return count, fmt.Errorf("write tx index at height %d: %w", h, err)
+			}
+		}
+		count++
+	}
+
+	return count, nil
+}

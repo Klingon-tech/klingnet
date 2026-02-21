@@ -56,6 +56,7 @@ type Config struct {
 	DHTServer  bool       // Run DHT in server mode (for seeds/validators)
 	NetworkID  string     // e.g. "klingnet-mainnet-1" — isolates DHT per network
 	DataDir    string     // Data directory for persisting node identity
+	ClearBans  bool       // Clear all peer bans on startup.
 }
 
 // Node represents a P2P node built on libp2p.
@@ -99,6 +100,7 @@ type Node struct {
 	dht             *dht.IpfsDHT  // nil if NoDiscover
 	connNotify      *connNotifier // connection lifecycle tracker
 	onPeerConnected func()        // optional callback when a peer connects
+	seedPeers       map[peer.ID]bool // Seed peers are exempt from banning.
 
 	// Handshake fields.
 	genesisHash      types.Hash
@@ -147,7 +149,13 @@ func (n *Node) Start() error {
 	if n.config.DB != nil {
 		banStore := NewBanStore(n.config.DB)
 		n.BanManager = NewBanManager(banStore, n)
-		n.BanManager.LoadBans()
+		if n.config.ClearBans {
+			banStore.PruneAll()
+			l := klog.WithComponent("p2p")
+			l.Info().Msg("All peer bans cleared (--clear-bans)")
+		} else {
+			n.BanManager.LoadBans()
+		}
 	} else {
 		n.BanManager = NewBanManager(nil, n)
 	}
@@ -221,6 +229,14 @@ func (n *Node) Start() error {
 	if len(n.config.Seeds) > 0 {
 		l := klog.WithComponent("p2p")
 		l.Info().Int("seeds", len(n.config.Seeds)).Msg("Connecting to seeds...")
+		// Parse seed peer IDs for ban exemption.
+		n.seedPeers = make(map[peer.ID]bool)
+		for _, addr := range n.config.Seeds {
+			info, err := peer.AddrInfoFromString(addr)
+			if err == nil {
+				n.seedPeers[info.ID] = true
+			}
+		}
 	}
 	n.connectSeedsOnce()
 	go n.connectSeedsLoop()
@@ -465,7 +481,20 @@ func (n *Node) connectSeedsOnce() bool {
 			logger.Warn().Str("addr", addr).Err(err).Msg("Bad seed address")
 			continue
 		}
+
+		// Seed peers are explicitly trusted — unban them if a stale ban
+		// exists from a previous session (e.g., after a protocol upgrade).
+		if n.BanManager != nil && n.BanManager.IsBanned(info.ID) {
+			n.BanManager.Unban(info.ID)
+			logger.Info().Str("peer", info.ID.String()[:16]).Msg("Unbanned seed peer")
+		}
+
 		alreadyConnected := n.host.Network().Connectedness(info.ID) == network.Connected
+
+		// Skip self — the seed server's own multiaddr may be in the seed list.
+		if info.ID == n.host.ID() {
+			continue
+		}
 
 		ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
 		err = n.host.Connect(ctx, *info)
@@ -490,6 +519,8 @@ func (n *Node) connectSeedsLoop() {
 	}
 	logger := klog.WithComponent("p2p")
 	targetPeers := n.seedRetryTarget()
+	zeroPeerTicks := 0
+	warnedUpgrade := false
 
 	for {
 		select {
@@ -504,8 +535,27 @@ func (n *Node) connectSeedsLoop() {
 					Msg("Peer count below target, retrying seeds...")
 				n.connectSeedsOnce()
 			}
+
+			if n.PeerCount() == 0 {
+				zeroPeerTicks++
+				if zeroPeerTicks >= 3 && !warnedUpgrade {
+					warnedUpgrade = true
+					logger.Warn().Msg("No compatible peers found after multiple attempts. " +
+						"Your node may be running an outdated protocol version and could be on a fork. " +
+						"Please update to the latest release.")
+				}
+			} else {
+				zeroPeerTicks = 0
+				warnedUpgrade = false
+			}
 		}
 	}
+}
+
+// isSeedPeer returns true if the peer ID was configured as a seed.
+// Seed peers are exempt from banning.
+func (n *Node) isSeedPeer(id peer.ID) bool {
+	return n.seedPeers[id]
 }
 
 // seedRetryTarget returns the desired minimum peer count for seed retries.

@@ -306,6 +306,19 @@ func (p *PoA) ValidatorCount() int {
 	return len(p.Validators)
 }
 
+// SigningLimit returns the maximum window of consecutive blocks in which a
+// single validator may sign at most once. For N validators, the window is
+// N/2 + 1 (integer division). Returns 0 for a single validator (no limit).
+func (p *PoA) SigningLimit() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	n := len(p.Validators)
+	if n <= 1 {
+		return 0
+	}
+	return n/2 + 1
+}
+
 // BackupDelay returns the staggered delay for out-of-turn block production.
 // The delay is proportional to the signer's distance from the in-turn slot,
 // so backup validators produce in a deterministic order.

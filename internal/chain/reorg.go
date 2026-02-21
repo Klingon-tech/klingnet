@@ -172,7 +172,8 @@ func (c *Chain) Reorg(newTipHash types.Hash) error {
 		bHash := blk.Hash()
 		undoBytes, err := c.blocks.GetUndo(bHash)
 		if err != nil {
-			return fmt.Errorf("load undo for block %s: %w", bHash, err)
+			// Undo data missing — fall back to full UTXO rebuild.
+			return c.rebuildReorg(newBranch, forkHeight)
 		}
 		var undo UndoData
 		if err := json.Unmarshal(undoBytes, &undo); err != nil {
@@ -242,6 +243,11 @@ func (c *Chain) Reorg(newTipHash types.Hash) error {
 		// Verify PoW difficulty if applicable.
 		if err := c.verifyDifficulty(blk); err != nil {
 			return fmt.Errorf("difficulty check replay block at height %d: %w", blk.Header.Height, err)
+		}
+
+		// Enforce PoA signing frequency limit.
+		if err := c.checkSigningLimit(blk); err != nil {
+			return fmt.Errorf("signing limit replay block at height %d: %w", blk.Header.Height, err)
 		}
 
 		// Validate UTXO-dependent rules (tx signatures, maturity, tokens, stakes).
@@ -396,4 +402,159 @@ func (c *Chain) collectBranch(tipHash types.Hash) ([]*block.Block, error) {
 	}
 
 	return branch, nil
+}
+
+// rebuildReorg handles a reorg when undo data is missing for old-branch blocks.
+// Instead of reverting individual blocks, it indexes the new branch by height,
+// clears the entire UTXO set, and replays all blocks from genesis through the
+// new tip. This is slower than undo-based reorg but always correct.
+func (c *Chain) rebuildReorg(newBranch []*block.Block, forkHeight uint64) error {
+	store, ok := c.utxos.(*utxo.Store)
+	if !ok {
+		return fmt.Errorf("rebuild reorg: UTXO set does not support ClearAll (not *utxo.Store)")
+	}
+
+	newTip := newBranch[len(newBranch)-1]
+	newTipHash := newTip.Hash()
+
+	// Fire deregistration/unstake handlers for old-branch blocks (above fork point).
+	oldHeight := c.state.Height
+	for h := oldHeight; h > forkHeight; h-- {
+		blk, err := c.blocks.GetBlockByHeight(h)
+		if err != nil {
+			continue // Best-effort handler firing.
+		}
+		if c.deregistrationHandler != nil {
+			for _, transaction := range blk.Transactions {
+				txHash := transaction.Hash()
+				for i, out := range transaction.Outputs {
+					if out.Script.Type == types.ScriptTypeRegister {
+						c.deregistrationHandler(txHash, uint32(i))
+					}
+				}
+			}
+		}
+		if c.unstakeHandler != nil {
+			for _, transaction := range blk.Transactions {
+				for _, out := range transaction.Outputs {
+					if out.Script.Type == types.ScriptTypeStake && len(out.Script.Data) == 33 {
+						c.unstakeHandler(out.Script.Data)
+					}
+				}
+			}
+		}
+	}
+
+	// Index new branch blocks by height (overwrites old-branch height entries).
+	for _, blk := range newBranch {
+		if err := c.blocks.PutBlock(blk); err != nil {
+			return fmt.Errorf("rebuild reorg: index block at height %d: %w", blk.Header.Height, err)
+		}
+	}
+
+	// Clear the entire UTXO set.
+	if err := store.ClearAll(); err != nil {
+		return fmt.Errorf("rebuild reorg: clear UTXOs: %w", err)
+	}
+
+	// Replay all blocks from genesis through the new tip, building UTXOs
+	// and storing undo data for future reorgs.
+	var supply uint64
+	var cumDiff uint64
+	for h := uint64(0); h <= newTip.Header.Height; h++ {
+		blk, err := c.blocks.GetBlockByHeight(h)
+		if err != nil {
+			return fmt.Errorf("rebuild reorg: load block at height %d: %w", h, err)
+		}
+
+		// Validate new-branch blocks (same checks as normal Reorg replay).
+		if h > forkHeight {
+			if err := c.validator.ValidateBlock(blk); err != nil {
+				return fmt.Errorf("rebuild reorg: validate block at height %d: %w", h, err)
+			}
+			if err := c.verifyDifficulty(blk); err != nil {
+				return fmt.Errorf("rebuild reorg: difficulty check at height %d: %w", h, err)
+			}
+			if err := c.checkSigningLimit(blk); err != nil {
+				return fmt.Errorf("rebuild reorg: signing limit at height %d: %w", h, err)
+			}
+			if err := c.validateBlockState(blk); err != nil {
+				return fmt.Errorf("rebuild reorg: state validation at height %d: %w", h, err)
+			}
+		}
+
+		blockReward := c.computeBlockReward(blk)
+
+		undo, err := c.applyBlockWithUndo(blk)
+		if err != nil {
+			return fmt.Errorf("rebuild reorg: apply block at height %d: %w", h, err)
+		}
+		undo.BlockReward = blockReward
+
+		undoBytes, err := json.Marshal(undo)
+		if err != nil {
+			return fmt.Errorf("rebuild reorg: marshal undo at height %d: %w", h, err)
+		}
+		if err := c.blocks.PutUndo(blk.Hash(), undoBytes); err != nil {
+			return fmt.Errorf("rebuild reorg: store undo at height %d: %w", h, err)
+		}
+
+		if c.maxSupply > 0 && supply+blockReward > c.maxSupply {
+			blockReward = c.maxSupply - supply
+		}
+		supply += blockReward
+		cumDiff += blk.Header.Difficulty
+
+		// Fire registration/stake handlers for new-branch blocks only.
+		if h > forkHeight {
+			if c.registrationHandler != nil {
+				for _, transaction := range blk.Transactions {
+					txHash := transaction.Hash()
+					for i, out := range transaction.Outputs {
+						if out.Script.Type == types.ScriptTypeRegister {
+							c.registrationHandler(txHash, uint32(i), out.Value, out.Script.Data, blk.Header.Height)
+						}
+					}
+				}
+			}
+			if c.stakeHandler != nil {
+				for _, transaction := range blk.Transactions {
+					for _, out := range transaction.Outputs {
+						if out.Script.Type == types.ScriptTypeStake && len(out.Script.Data) == 33 {
+							c.stakeHandler(out.Script.Data)
+						}
+					}
+				}
+			}
+			if c.unstakeHandler != nil {
+				for i := range undo.SpentUTXOs {
+					su := &undo.SpentUTXOs[i]
+					if su.Script.Type == types.ScriptTypeStake && len(su.Script.Data) == 33 {
+						c.unstakeHandler(su.Script.Data)
+					}
+				}
+			}
+		}
+	}
+
+	// Update chain state.
+	c.state.TipHash = newTipHash
+	c.state.Height = newTip.Header.Height
+	c.state.TipTimestamp = newTip.Header.Timestamp
+	c.state.Supply = supply
+	c.state.CumulativeDifficulty = cumDiff
+
+	if err := c.blocks.SetTip(newTipHash, newTip.Header.Height, supply); err != nil {
+		return fmt.Errorf("rebuild reorg: set tip: %w", err)
+	}
+	if err := c.blocks.SetCumulativeDifficulty(cumDiff); err != nil {
+		return fmt.Errorf("rebuild reorg: set cumulative difficulty: %w", err)
+	}
+
+	// Reorg complete — remove the crash-recovery checkpoint.
+	if err := c.blocks.DeleteReorgCheckpoint(); err != nil {
+		return fmt.Errorf("rebuild reorg: delete checkpoint: %w", err)
+	}
+
+	return nil
 }

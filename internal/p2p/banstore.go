@@ -81,6 +81,26 @@ func (bs *BanStore) ForEach(fn func(*BanRecord) error) error {
 	})
 }
 
+// PruneAll removes all ban records (expired or not).
+func (bs *BanStore) PruneAll() (int, error) {
+	var toDelete [][]byte
+	err := bs.db.ForEach([]byte(banKeyPrefix), func(key, _ []byte) error {
+		keyCopy := make([]byte, len(key))
+		copy(keyCopy, key)
+		toDelete = append(toDelete, keyCopy)
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("iterate for prune all: %w", err)
+	}
+	for _, k := range toDelete {
+		if err := bs.db.Delete(k); err != nil {
+			return 0, fmt.Errorf("delete ban: %w", err)
+		}
+	}
+	return len(toDelete), nil
+}
+
 // PruneExpired removes all expired ban records. Returns the number pruned.
 func (bs *BanStore) PruneExpired() (int, error) {
 	now := time.Now().Unix()

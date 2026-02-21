@@ -726,3 +726,34 @@ func TestPoA_AddValidator_MaintainsOrder(t *testing.T) {
 // Future timestamp check is handled by chain.ProcessBlock (2-minute rule),
 // not by PoA.VerifyHeader. VerifyHeader only checks structural correctness
 // (signature, difficulty). See TestProcessBlock_FutureTimestamp in chain_test.go.
+
+func TestPoA_SigningLimit(t *testing.T) {
+	tests := []struct {
+		n    int
+		want int
+	}{
+		{1, 0},
+		{2, 2},
+		{3, 2},
+		{4, 3},
+		{5, 3},
+		{6, 4},
+		{7, 4},
+		{10, 6},
+	}
+	for _, tt := range tests {
+		pubs := make([][]byte, tt.n)
+		for i := range pubs {
+			key, _ := crypto.GenerateKey()
+			pubs[i] = key.PublicKey()
+		}
+		poa, err := NewPoA(pubs, 3)
+		if err != nil {
+			t.Fatalf("NewPoA(n=%d): %v", tt.n, err)
+		}
+		got := poa.SigningLimit()
+		if got != tt.want {
+			t.Errorf("SigningLimit(N=%d) = %d, want %d", tt.n, got, tt.want)
+		}
+	}
+}
