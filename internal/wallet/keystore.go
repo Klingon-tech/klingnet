@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sync"
 	"time"
 )
 
@@ -34,6 +36,7 @@ func (a AccountEntry) Derivation() (change uint32, index uint32) {
 // Keystore manages encrypted key storage on disk.
 type Keystore struct {
 	path string
+	mu   sync.Mutex
 }
 
 // NewKeystore creates a keystore that reads/writes to the given directory.
@@ -46,13 +49,32 @@ func NewKeystore(path string) (*Keystore, error) {
 }
 
 // walletPath returns the file path for a wallet by name.
-func (ks *Keystore) walletPath(name string) string {
-	return filepath.Join(ks.path, name+".wallet")
+var walletNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+func validateWalletName(name string) error {
+	if !walletNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid wallet name %q: use 1-64 chars [A-Za-z0-9._-], starting with alphanumeric", name)
+	}
+	return nil
+}
+
+func (ks *Keystore) walletPath(name string) (string, error) {
+	if err := validateWalletName(name); err != nil {
+		return "", err
+	}
+	return filepath.Join(ks.path, name+".wallet"), nil
 }
 
 // Create creates a new encrypted wallet file from a mnemonic seed.
 func (ks *Keystore) Create(name string, seed, password []byte, params EncryptionParams) error {
-	path := ks.walletPath(name)
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+
+	path, err := ks.walletPath(name)
+	if err != nil {
+		return err
+	}
+
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("wallet %q already exists", name)
 	}
@@ -74,7 +96,15 @@ func (ks *Keystore) Create(name string, seed, password []byte, params Encryption
 
 // Load decrypts a wallet and returns the seed bytes.
 func (ks *Keystore) Load(name string, password []byte) ([]byte, error) {
-	kf, err := ks.readFile(ks.walletPath(name))
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+
+	path, err := ks.walletPath(name)
+	if err != nil {
+		return nil, err
+	}
+
+	kf, err := ks.readFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +119,14 @@ func (ks *Keystore) Load(name string, password []byte) ([]byte, error) {
 
 // AddAccount records a derived account in the wallet metadata.
 func (ks *Keystore) AddAccount(walletName string, acct AccountEntry) error {
-	path := ks.walletPath(walletName)
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+
+	path, err := ks.walletPath(walletName)
+	if err != nil {
+		return err
+	}
+
 	kf, err := ks.readFile(path)
 	if err != nil {
 		return err
@@ -121,7 +158,15 @@ func (ks *Keystore) AddAccount(walletName string, acct AccountEntry) error {
 
 // ListAccounts returns the account entries for a wallet.
 func (ks *Keystore) ListAccounts(walletName string) ([]AccountEntry, error) {
-	kf, err := ks.readFile(ks.walletPath(walletName))
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+
+	path, err := ks.walletPath(walletName)
+	if err != nil {
+		return nil, err
+	}
+
+	kf, err := ks.readFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +175,9 @@ func (ks *Keystore) ListAccounts(walletName string) ([]AccountEntry, error) {
 
 // List returns the names of all wallet files in the keystore.
 func (ks *Keystore) List() ([]string, error) {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+
 	entries, err := os.ReadDir(ks.path)
 	if err != nil {
 		return nil, fmt.Errorf("read keystore dir: %w", err)
@@ -150,7 +198,15 @@ func (ks *Keystore) List() ([]string, error) {
 
 // GetChangeIndex returns the next change address index for a wallet.
 func (ks *Keystore) GetChangeIndex(name string) (uint32, error) {
-	kf, err := ks.readFile(ks.walletPath(name))
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+
+	path, err := ks.walletPath(name)
+	if err != nil {
+		return 0, err
+	}
+
+	kf, err := ks.readFile(path)
 	if err != nil {
 		return 0, err
 	}
@@ -159,7 +215,14 @@ func (ks *Keystore) GetChangeIndex(name string) (uint32, error) {
 
 // IncrementChangeIndex advances the change address index by 1.
 func (ks *Keystore) IncrementChangeIndex(name string) error {
-	path := ks.walletPath(name)
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+
+	path, err := ks.walletPath(name)
+	if err != nil {
+		return err
+	}
+
 	kf, err := ks.readFile(path)
 	if err != nil {
 		return err
@@ -170,7 +233,15 @@ func (ks *Keystore) IncrementChangeIndex(name string) error {
 
 // GetExternalIndex returns the next external address index for a wallet.
 func (ks *Keystore) GetExternalIndex(name string) (uint32, error) {
-	kf, err := ks.readFile(ks.walletPath(name))
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+
+	path, err := ks.walletPath(name)
+	if err != nil {
+		return 0, err
+	}
+
+	kf, err := ks.readFile(path)
 	if err != nil {
 		return 0, err
 	}
@@ -179,7 +250,14 @@ func (ks *Keystore) GetExternalIndex(name string) (uint32, error) {
 
 // IncrementExternalIndex advances the external address index by 1.
 func (ks *Keystore) IncrementExternalIndex(name string) error {
-	path := ks.walletPath(name)
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+
+	path, err := ks.walletPath(name)
+	if err != nil {
+		return err
+	}
+
 	kf, err := ks.readFile(path)
 	if err != nil {
 		return err
@@ -190,7 +268,14 @@ func (ks *Keystore) IncrementExternalIndex(name string) error {
 
 // SetExternalIndex sets the next external address index to the given value.
 func (ks *Keystore) SetExternalIndex(name string, idx uint32) error {
-	path := ks.walletPath(name)
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+
+	path, err := ks.walletPath(name)
+	if err != nil {
+		return err
+	}
+
 	kf, err := ks.readFile(path)
 	if err != nil {
 		return err
@@ -201,7 +286,14 @@ func (ks *Keystore) SetExternalIndex(name string, idx uint32) error {
 
 // SetChangeIndex sets the next change address index to the given value.
 func (ks *Keystore) SetChangeIndex(name string, idx uint32) error {
-	path := ks.walletPath(name)
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+
+	path, err := ks.walletPath(name)
+	if err != nil {
+		return err
+	}
+
 	kf, err := ks.readFile(path)
 	if err != nil {
 		return err
@@ -212,7 +304,14 @@ func (ks *Keystore) SetChangeIndex(name string, idx uint32) error {
 
 // Delete removes a wallet file.
 func (ks *Keystore) Delete(name string) error {
-	path := ks.walletPath(name)
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+
+	path, err := ks.walletPath(name)
+	if err != nil {
+		return err
+	}
+
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return fmt.Errorf("wallet %q not found", name)
 	}

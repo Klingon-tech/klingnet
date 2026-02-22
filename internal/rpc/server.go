@@ -10,6 +10,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -44,12 +46,14 @@ type Server struct {
 	tokenStore  *token.Store                           // For token queries (nil = disabled).
 	tracker     *consensus.ValidatorTracker            // For root chain validator status (nil = disabled).
 	scTrackers  map[string]*consensus.ValidatorTracker // chainID hex → sub-chain tracker
+	trackersMu  sync.RWMutex                           // guards tracker + scTrackers
 	txIndex     *WalletTxIndex                         // For indexed wallet history (nil = scan fallback).
 	banManager  *p2p.BanManager                        // For net_getBanList (nil = disabled).
 	server      *http.Server
 	logger      zerolog.Logger
 	ln          net.Listener
 	allowedNets []*net.IPNet // Empty = allow all.
+	denyAllRPC  bool         // True when allowlist config is invalid; fail closed.
 	corsOrigins []string     // Empty = no CORS headers.
 }
 
@@ -72,7 +76,14 @@ func New(addr string, ch *chain.Chain, utxos *utxo.Store, pool *mempool.Pool,
 	}
 
 	if len(rpcCfg) > 0 {
-		s.allowedNets = parseAllowedIPs(rpcCfg[0].AllowedIPs)
+		nets, invalid := parseAllowedIPs(rpcCfg[0].AllowedIPs)
+		s.allowedNets = nets
+		if len(invalid) > 0 {
+			s.denyAllRPC = true
+			s.logger.Error().
+				Strs("entries", invalid).
+				Msg("Invalid rpc.allowed entries; denying all RPC requests")
+		}
 		s.corsOrigins = rpcCfg[0].CORSOrigins
 	}
 
@@ -89,18 +100,26 @@ func New(addr string, ch *chain.Chain, utxos *utxo.Store, pool *mempool.Pool,
 	return s
 }
 
-// parseAllowedIPs converts string IP/CIDR entries into net.IPNet.
-func parseAllowedIPs(entries []string) []*net.IPNet {
+// parseAllowedIPs converts string IP/CIDR entries into net.IPNet and reports invalid entries.
+func parseAllowedIPs(entries []string) ([]*net.IPNet, []string) {
 	var nets []*net.IPNet
+	var invalid []string
 	for _, entry := range entries {
-		_, ipNet, err := net.ParseCIDR(entry)
+		e := strings.TrimSpace(entry)
+		if e == "" {
+			invalid = append(invalid, entry)
+			continue
+		}
+
+		_, ipNet, err := net.ParseCIDR(e)
 		if err == nil {
 			nets = append(nets, ipNet)
 			continue
 		}
 		// Try as a single IP (add /32 or /128).
-		ip := net.ParseIP(entry)
+		ip := net.ParseIP(e)
 		if ip == nil {
+			invalid = append(invalid, entry)
 			continue
 		}
 		bits := 32
@@ -109,7 +128,7 @@ func parseAllowedIPs(entries []string) []*net.IPNet {
 		}
 		nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
 	}
-	return nets
+	return nets, invalid
 }
 
 // Start begins listening and serving in a background goroutine.
@@ -165,17 +184,35 @@ func (s *Server) SetTokenStore(ts *token.Store) {
 
 // SetValidatorTracker sets the root chain validator liveness tracker.
 func (s *Server) SetValidatorTracker(t *consensus.ValidatorTracker) {
+	s.trackersMu.Lock()
+	defer s.trackersMu.Unlock()
 	s.tracker = t
 }
 
 // SetSubChainTracker sets a sub-chain's validator liveness tracker.
 func (s *Server) SetSubChainTracker(chainIDHex string, t *consensus.ValidatorTracker) {
+	s.trackersMu.Lock()
+	defer s.trackersMu.Unlock()
 	s.scTrackers[chainIDHex] = t
 }
 
 // RemoveSubChainTracker removes a sub-chain's validator tracker.
 func (s *Server) RemoveSubChainTracker(chainIDHex string) {
+	s.trackersMu.Lock()
+	defer s.trackersMu.Unlock()
 	delete(s.scTrackers, chainIDHex)
+}
+
+func (s *Server) rootTracker() *consensus.ValidatorTracker {
+	s.trackersMu.RLock()
+	defer s.trackersMu.RUnlock()
+	return s.tracker
+}
+
+func (s *Server) subChainTracker(chainIDHex string) *consensus.ValidatorTracker {
+	s.trackersMu.RLock()
+	defer s.trackersMu.RUnlock()
+	return s.scTrackers[chainIDHex]
 }
 
 // SetBanManager sets the ban manager for net_getBanList.
@@ -190,6 +227,11 @@ func (s *Server) SetWalletTxIndex(idx *WalletTxIndex) {
 
 // handleRequest is the main HTTP handler for JSON-RPC requests.
 func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
+	if s.denyAllRPC {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	// IP filtering.
 	if len(s.allowedNets) > 0 {
 		host, _, err := net.SplitHostPort(r.RemoteAddr)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -416,5 +417,68 @@ func TestKeystore_FullFlow(t *testing.T) {
 	accounts, _ := ks.ListAccounts("main")
 	if len(accounts) != 1 || accounts[0].Address != addr.String() {
 		t.Error("account not persisted correctly")
+	}
+}
+
+func TestKeystore_InvalidWalletName(t *testing.T) {
+	ks := testKeystore(t)
+	seed := testSeedBytes(t)
+
+	invalidNames := []string{
+		"",
+		"../escape",
+		"..\\escape",
+		"/abs",
+		"with space",
+		"semi:semicolon",
+	}
+
+	for _, name := range invalidNames {
+		if err := ks.Create(name, seed, []byte("p"), fastParams()); err == nil {
+			t.Errorf("Create(%q) should fail for invalid wallet name", name)
+		}
+		if _, err := ks.Load(name, []byte("p")); err == nil {
+			t.Errorf("Load(%q) should fail for invalid wallet name", name)
+		}
+		if err := ks.Delete(name); err == nil {
+			t.Errorf("Delete(%q) should fail for invalid wallet name", name)
+		}
+	}
+}
+
+func TestKeystore_ChangeIndex_ConcurrentIncrement(t *testing.T) {
+	ks := testKeystore(t)
+	seed := testSeedBytes(t)
+
+	if err := ks.Create("wallet", seed, []byte("p"), fastParams()); err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	const workers = 32
+	const perWorker = 100
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < perWorker; j++ {
+				if err := ks.IncrementChangeIndex("wallet"); err != nil {
+					t.Errorf("IncrementChangeIndex() error: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	idx, err := ks.GetChangeIndex("wallet")
+	if err != nil {
+		t.Fatalf("GetChangeIndex() error: %v", err)
+	}
+
+	want := uint32(workers * perWorker)
+	if idx != want {
+		t.Fatalf("change index = %d, want %d", idx, want)
 	}
 }

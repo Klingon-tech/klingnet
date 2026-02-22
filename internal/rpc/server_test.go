@@ -670,6 +670,24 @@ func TestRPC_IPFilter_Empty_AllowsAll(t *testing.T) {
 	}
 }
 
+func TestRPC_IPFilter_InvalidAllowlist_DeniesAll(t *testing.T) {
+	env := setupTestEnvWithConfig(t, config.RPCConfig{
+		AllowedIPs: []string{"not-an-ip"},
+	})
+
+	req := Request{JSONRPC: "2.0", Method: "chain_getInfo", ID: 1}
+	body, _ := json.Marshal(req)
+	resp, err := http.Post(env.url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", resp.StatusCode)
+	}
+}
+
 // --- CORS ---
 
 func TestRPC_CORS_WildcardOrigin(t *testing.T) {
@@ -931,6 +949,23 @@ func TestRPC_ValidatorGetStatus_ByPubKey(t *testing.T) {
 	}
 	if result.Validators[0].BlockCount != 1 {
 		t.Errorf("block_count = %d, want 1", result.Validators[0].BlockCount)
+	}
+}
+
+func TestRPC_ValidatorGetStatus_InvalidParams(t *testing.T) {
+	env := setupTestEnv(t)
+
+	tracker := consensus.NewValidatorTracker(60 * time.Second)
+	env.server.SetValidatorTracker(tracker)
+
+	resp := rpcCall(t, env.url, "validator_getStatus", map[string]any{
+		"pubkey": 123,
+	})
+	if resp.Error == nil {
+		t.Fatal("expected invalid params error")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Fatalf("error code = %d, want %d", resp.Error.Code, CodeInvalidParams)
 	}
 }
 

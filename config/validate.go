@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/hex"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/Klingon-tech/klingnet-chain/pkg/types"
@@ -21,6 +22,9 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.RPC.Port < 0 || cfg.RPC.Port > 65535 {
 		return fmt.Errorf("rpc.port must be in range [0, 65535]")
+	}
+	if err := validateRPCAllowedIPs(cfg.RPC.AllowedIPs); err != nil {
+		return err
 	}
 
 	if cfg.SubChainSync.Mode == "" {
@@ -66,6 +70,22 @@ func validateChainIDs(ids []string, field string) error {
 		}
 		seen[s] = struct{}{}
 		ids[i] = s
+	}
+	return nil
+}
+
+func validateRPCAllowedIPs(entries []string) error {
+	for i, entry := range entries {
+		e := strings.TrimSpace(entry)
+		if e == "" {
+			return fmt.Errorf("rpc.allowed[%d] is empty", i)
+		}
+		if _, _, err := net.ParseCIDR(e); err == nil {
+			continue
+		}
+		if net.ParseIP(e) == nil {
+			return fmt.Errorf("rpc.allowed[%d] must be an IP or CIDR, got %q", i, entry)
+		}
 	}
 	return nil
 }

@@ -283,7 +283,7 @@ func (s *Server) handleMempoolGetInfo(req *Request) (interface{}, *Error) {
 		return nil, err
 	}
 	return &MempoolInfoResult{
-		Count:  cc.pool.Count(),
+		Count:      cc.pool.Count(),
 		MinFeeRate: cc.pool.MinFeeRate(),
 	}, nil
 }
@@ -438,18 +438,29 @@ func (s *Server) handleStakeGetValidators(_ *Request) (interface{}, *Error) {
 // ── Validator status endpoints ───────────────────────────────────────
 
 func (s *Server) handleValidatorGetStatus(req *Request) (interface{}, *Error) {
+	// Optional pubkey + chain filter.
+	var params struct {
+		PubKey  string `json:"pubkey"`
+		ChainID string `json:"chain_id"`
+	}
+	if req.Params != nil {
+		if err := parseParams(req, &params); err != nil {
+			return nil, err
+		}
+	}
+
 	// Resolve tracker and engine for root or sub-chain.
-	chainIDHex := extractChainID(req)
+	chainIDHex := params.ChainID
 	var activeTracker *consensus.ValidatorTracker
 	var poa *consensus.PoA
 
 	if chainIDHex == "" {
 		// Root chain.
-		activeTracker = s.tracker
+		activeTracker = s.rootTracker()
 		poa, _ = s.engine.(*consensus.PoA)
 	} else {
 		// Sub-chain.
-		activeTracker = s.scTrackers[chainIDHex]
+		activeTracker = s.subChainTracker(chainIDHex)
 		if s.scManager != nil {
 			chainIDBytes, err := hex.DecodeString(chainIDHex)
 			if err == nil && len(chainIDBytes) == 32 {
@@ -467,15 +478,6 @@ func (s *Server) handleValidatorGetStatus(req *Request) (interface{}, *Error) {
 	}
 	if poa == nil {
 		return &ValidatorStatusListResult{Validators: []ValidatorStatusResult{}}, nil
-	}
-
-	// Optional pubkey filter.
-	var params struct {
-		PubKey  string `json:"pubkey"`
-		ChainID string `json:"chain_id"`
-	}
-	if req.Params != nil {
-		parseParams(req, &params)
 	}
 
 	if params.PubKey != "" {
