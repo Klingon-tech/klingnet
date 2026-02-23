@@ -115,7 +115,22 @@ export default function Settings() {
           </div>
           <div className="space-y-2">
             <Label>Config File</Label>
-            <Input type="text" value={confFilePath} readOnly className="bg-muted" />
+            <div className="flex gap-2">
+              <Input type="text" value={confFilePath} readOnly className="bg-muted flex-1" />
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  try {
+                    const mod = await import('../../../wailsjs/go/main/App');
+                    await mod.OpenConfigFile();
+                  } catch {
+                    // ignore
+                  }
+                }}
+              >
+                Open
+              </Button>
+            </div>
             <p className="text-xs text-muted-foreground">
               Advanced settings (mining, validator key, sub-chain sync) can be configured by editing klingnet.conf. Restart to apply.
             </p>

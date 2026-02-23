@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 
 	"github.com/Klingon-tech/klingnet-chain/config"
@@ -290,6 +292,33 @@ func (a *App) GetConfFilePath() string {
 		cfg.DataDir = a.dataDir
 	}
 	return cfg.ConfigFile()
+}
+
+// OpenConfigFile opens the klingnet.conf file in the default text editor.
+// If the file does not exist, it is created first.
+func (a *App) OpenConfigFile() error {
+	path := a.GetConfFilePath()
+
+	// Create the file if it doesn't exist so the editor has something to open.
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			return fmt.Errorf("create config dir: %w", err)
+		}
+		if err := os.WriteFile(path, []byte("# Klingnet node configuration\n# See documentation for available options.\n"), 0600); err != nil {
+			return fmt.Errorf("create config file: %w", err)
+		}
+	}
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", path)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", "", path)
+	default: // linux, freebsd, etc.
+		cmd = exec.Command("xdg-open", path)
+	}
+	return cmd.Start()
 }
 
 func defaultDataDir() string {
