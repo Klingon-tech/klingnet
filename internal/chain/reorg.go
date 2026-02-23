@@ -348,6 +348,11 @@ func (c *Chain) Reorg(newTipHash types.Hash) error {
 		}
 	}
 
+	// Notify reorg handler (e.g., to reconstruct suspension state).
+	if c.reorgHandler != nil {
+		c.reorgHandler()
+	}
+
 	return nil
 }
 
@@ -540,6 +545,11 @@ func (c *Chain) rebuildReorg(newBranch []*block.Block, forkHeight uint64) error 
 	// Reorg complete — remove the crash-recovery checkpoint.
 	if err := c.blocks.DeleteReorgCheckpoint(); err != nil {
 		return fmt.Errorf("rebuild reorg: delete checkpoint: %w", err)
+	}
+
+	// Notify reorg handler (e.g., to reconstruct suspension state).
+	if c.reorgHandler != nil {
+		c.reorgHandler()
 	}
 
 	return nil

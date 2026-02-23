@@ -154,7 +154,7 @@ type TxValidateResult struct {
 
 // MempoolInfoResult is returned by mempool_getInfo.
 type MempoolInfoResult struct {
-	Count  int    `json:"count"`
+	Count      int    `json:"count"`
 	MinFeeRate uint64 `json:"min_fee_rate"`
 }
 
@@ -528,6 +528,7 @@ type SubChainUnstakeResult struct {
 type ValidatorStatusResult struct {
 	PubKey        string `json:"pubkey"`
 	IsOnline      bool   `json:"is_online"`
+	IsSuspended   bool   `json:"is_suspended"`
 	LastHeartbeat int64  `json:"last_heartbeat"` // unix timestamp, 0 if never
 	LastBlock     int64  `json:"last_block"`     // unix timestamp, 0 if never
 	BlockCount    uint64 `json:"block_count"`

@@ -46,11 +46,11 @@ type qtSettings struct {
 
 // App manages application lifecycle and settings.
 type App struct {
-	ctx          context.Context
-	rpcEndpoint  string
-	dataDir      string
-	networkName  string // "mainnet" or "testnet"
-	activeWallet string // currently selected wallet name
+	ctx            context.Context
+	rpcEndpoint    string
+	dataDir        string
+	networkName    string // "mainnet" or "testnet"
+	activeWallet   string // currently selected wallet name
 	notifySettings NotificationSettings
 
 	// knownAccounts caches wallet addresses so balance works without unlock.
@@ -324,4 +324,3 @@ func (a *App) OpenConfigFile() error {
 func defaultDataDir() string {
 	return config.DefaultDataDir()
 }
-

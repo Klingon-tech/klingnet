@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"testing"
 	"time"
@@ -756,4 +757,261 @@ func TestPoA_SigningLimit(t *testing.T) {
 			t.Errorf("SigningLimit(N=%d) = %d, want %d", tt.n, got, tt.want)
 		}
 	}
+}
+
+// ── Validator suspension tests ──────────────────────────────────────
+
+func TestPoA_RecordBlockProduction(t *testing.T) {
+	key, poa := testValidator(t)
+
+	poa.RecordBlockProduction(key.PublicKey(), 10)
+	poa.RecordBlockProduction(key.PublicKey(), 20)
+
+	poa.mu.RLock()
+	defer poa.mu.RUnlock()
+
+	// currentHeight should be 20.
+	if poa.currentHeight != 20 {
+		t.Errorf("currentHeight = %d, want 20", poa.currentHeight)
+	}
+
+	// lastProduced should record height 20 for this validator.
+	pubHex := hex.EncodeToString(key.PublicKey())
+	lastH, ok := poa.lastProduced[pubHex]
+	if !ok {
+		t.Fatalf("lastProduced has no entry for validator %s", pubHex[:16])
+	}
+	if lastH != 20 {
+		t.Errorf("lastProduced[%s] = %d, want 20", pubHex[:16], lastH)
+	}
+}
+
+func TestPoA_IsSuspended_NoProduction(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey()}, 3)
+
+	// Record only key1 producing blocks.
+	for h := uint64(1); h <= SuspensionWindow+10; h++ {
+		poa.RecordBlockProduction(key1.PublicKey(), h)
+	}
+
+	// key2 never produced — should be suspended.
+	if !poa.IsSuspended(key2.PublicKey()) {
+		t.Error("key2 should be suspended (never produced)")
+	}
+
+	// key1 has been producing — should NOT be suspended.
+	if poa.IsSuspended(key1.PublicKey()) {
+		t.Error("key1 should NOT be suspended (actively producing)")
+	}
+}
+
+func TestPoA_IsSuspended_RecentProduction(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey()}, 3)
+
+	// Both validators produce within the window.
+	poa.RecordBlockProduction(key1.PublicKey(), 100)
+	poa.RecordBlockProduction(key2.PublicKey(), 150)
+	poa.SetCurrentHeight(250) // 250 - 150 = 100 < 200 window
+
+	if poa.IsSuspended(key1.PublicKey()) {
+		t.Error("key1 should NOT be suspended (produced at 100, height 250, within window)")
+	}
+	if poa.IsSuspended(key2.PublicKey()) {
+		t.Error("key2 should NOT be suspended (produced at 150, height 250, within window)")
+	}
+}
+
+func TestPoA_IsSuspended_TooEarly(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey()}, 3)
+
+	// Chain is young — below SuspensionWindow.
+	poa.SetCurrentHeight(50)
+
+	// Even though key2 never produced, no suspensions when chain is young.
+	if poa.IsSuspended(key2.PublicKey()) {
+		t.Error("no validator should be suspended when currentHeight < SuspensionWindow")
+	}
+}
+
+func TestPoA_IsSuspended_MinActive(t *testing.T) {
+	key, poa := testValidator(t) // single validator
+
+	// Advance past SuspensionWindow without the single validator producing.
+	poa.SetCurrentHeight(SuspensionWindow + 10)
+
+	// Single validator should NOT be suspended (MinActiveValidators = 1).
+	if poa.IsSuspended(key.PublicKey()) {
+		t.Error("single validator should never be suspended (MinActiveValidators = 1)")
+	}
+}
+
+func TestPoA_EffectiveValidators_SomeSuspended(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+	key3, _ := crypto.GenerateKey()
+
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey(), key3.PublicKey()}, 3)
+
+	// Only key1 and key2 produce blocks.
+	for h := uint64(1); h <= SuspensionWindow+10; h++ {
+		if h%2 == 0 {
+			poa.RecordBlockProduction(key1.PublicKey(), h)
+		} else {
+			poa.RecordBlockProduction(key2.PublicKey(), h)
+		}
+	}
+
+	effective := poa.EffectiveValidators()
+	if len(effective) != 2 {
+		t.Fatalf("EffectiveValidators() = %d validators, want 2", len(effective))
+	}
+
+	// key3 should not be in the effective set.
+	for _, v := range effective {
+		if bytes.Equal(v, key3.PublicKey()) {
+			t.Error("key3 should NOT be in effective set (never produced)")
+		}
+	}
+}
+
+func TestPoA_EffectiveValidators_FallbackFull(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+
+	poa, _ := NewPoA([][]byte{key1.PublicKey()}, 3)
+
+	// Advance past window without anyone producing.
+	poa.SetCurrentHeight(SuspensionWindow + 10)
+
+	// Should fall back to full set since suspending all would violate MinActiveValidators.
+	effective := poa.EffectiveValidators()
+	if len(effective) != 1 {
+		t.Fatalf("EffectiveValidators() = %d, want 1 (fallback to full set)", len(effective))
+	}
+	if !bytes.Equal(effective[0], key1.PublicKey()) {
+		t.Error("effective set should contain key1 (fallback)")
+	}
+}
+
+func TestPoA_BackupDelayEffective_UsesActiveSet(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+	key3, _ := crypto.GenerateKey()
+
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey(), key3.PublicKey()}, 3)
+
+	// Only key1 and key2 produce, key3 is suspended.
+	for h := uint64(1); h <= SuspensionWindow+10; h++ {
+		if h%2 == 0 {
+			poa.RecordBlockProduction(key1.PublicKey(), h)
+		} else {
+			poa.RecordBlockProduction(key2.PublicKey(), h)
+		}
+	}
+
+	// Set key1 as signer.
+	poa.SetSigner(key1)
+
+	// BackupDelayEffective should use 2-validator set, not 3.
+	// With 3 validators, full-set BackupDelay could be up to 3s.
+	// With 2 validators, max delay is 1.5s.
+	ts := uint64(1700000000)
+	delay := poa.BackupDelayEffective(ts)
+
+	// Max delay in a 2-validator set with blockTime=3: (1) * 3 * 500ms = 1500ms.
+	if delay > 1500*time.Millisecond {
+		t.Errorf("BackupDelayEffective() = %v, want <= 1500ms for 2-validator effective set", delay)
+	}
+}
+
+func TestPoA_BackupDelayEffective_SuspendedSigner(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey()}, 3)
+
+	// Only key1 produces, key2 is suspended.
+	for h := uint64(1); h <= SuspensionWindow+10; h++ {
+		poa.RecordBlockProduction(key1.PublicKey(), h)
+	}
+
+	// Set key2 as signer (the suspended one).
+	poa.SetSigner(key2)
+
+	ts := uint64(1700000000)
+	delay := poa.BackupDelayEffective(ts)
+
+	// Suspended signer gets fixed blockTime delay (3s).
+	expected := 3 * time.Second
+	if delay != expected {
+		t.Errorf("BackupDelayEffective() for suspended signer = %v, want %v", delay, expected)
+	}
+}
+
+func TestPoA_AddValidator_GracePeriod(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+
+	poa, _ := NewPoA([][]byte{key1.PublicKey()}, 3)
+
+	// Advance chain past SuspensionWindow.
+	for h := uint64(1); h <= SuspensionWindow+10; h++ {
+		poa.RecordBlockProduction(key1.PublicKey(), h)
+	}
+
+	// Add key2 dynamically — should get grace period (lastProduced = currentHeight).
+	poa.AddValidator(key2.PublicKey())
+
+	// key2 should NOT be suspended immediately after being added.
+	if poa.IsSuspended(key2.PublicKey()) {
+		t.Error("newly added validator should NOT be suspended (grace period)")
+	}
+}
+
+func TestPoA_Reactivation(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+
+	poa, _ := NewPoA([][]byte{key1.PublicKey(), key2.PublicKey()}, 3)
+
+	// Only key1 produces, key2 becomes suspended.
+	for h := uint64(1); h <= SuspensionWindow+10; h++ {
+		poa.RecordBlockProduction(key1.PublicKey(), h)
+	}
+
+	if !poa.IsSuspended(key2.PublicKey()) {
+		t.Fatal("key2 should be suspended before reactivation")
+	}
+
+	// key2 produces a block → reactivation.
+	poa.RecordBlockProduction(key2.PublicKey(), SuspensionWindow+11)
+
+	if poa.IsSuspended(key2.PublicKey()) {
+		t.Error("key2 should NOT be suspended after producing a block (reactivated)")
+	}
+}
+
+func TestPoA_ResetSuspensions(t *testing.T) {
+	key, poa := testValidator(t)
+
+	poa.RecordBlockProduction(key.PublicKey(), 100)
+
+	poa.ResetSuspensions()
+
+	poa.mu.RLock()
+	if len(poa.lastProduced) != 0 {
+		t.Errorf("lastProduced should be empty after reset, got %d entries", len(poa.lastProduced))
+	}
+	if poa.currentHeight != 0 {
+		t.Errorf("currentHeight should be 0 after reset, got %d", poa.currentHeight)
+	}
+	poa.mu.RUnlock()
 }

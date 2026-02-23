@@ -69,7 +69,7 @@ type mockChainState struct {
 
 func (m *mockChainState) Height() uint64       { return m.height }
 func (m *mockChainState) TipHash() types.Hash  { return m.tipHash }
-func (m *mockChainState) TipTimestamp() uint64  { return m.tipTimestamp }
+func (m *mockChainState) TipTimestamp() uint64 { return m.tipTimestamp }
 
 // --- mockMempool ---
 

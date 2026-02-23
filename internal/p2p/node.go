@@ -86,8 +86,8 @@ type Node struct {
 	scSubs          map[string]*pubsub.Subscription    // chainID hex → block subscription
 	scTxTopics      map[string]*pubsub.Topic           // chainID hex → tx topic
 	scTxSubs        map[string]*pubsub.Subscription    // chainID hex → tx subscription
-	scBlockHandlers map[string]func(peer.ID, []byte)    // chainID hex → block handler
-	scTxHandlers    map[string]func(peer.ID, []byte)    // chainID hex → tx handler
+	scBlockHandlers map[string]func(peer.ID, []byte)   // chainID hex → block handler
+	scTxHandlers    map[string]func(peer.ID, []byte)   // chainID hex → tx handler
 	scHBTopics      map[string]*pubsub.Topic           // chainID hex → heartbeat topic
 	scHBSubs        map[string]*pubsub.Subscription    // chainID hex → heartbeat subscription
 	scHBHandlers    map[string]func(*HeartbeatMessage) // chainID hex → heartbeat handler
@@ -95,11 +95,11 @@ type Node struct {
 	mu    sync.RWMutex
 	peers map[peer.ID]*Peer
 
-	BanManager      *BanManager   // nil if Config.DB is nil
-	peerStore       *PeerStore    // nil if Config.DB is nil
-	dht             *dht.IpfsDHT  // nil if NoDiscover
-	connNotify      *connNotifier // connection lifecycle tracker
-	onPeerConnected func()        // optional callback when a peer connects
+	BanManager      *BanManager      // nil if Config.DB is nil
+	peerStore       *PeerStore       // nil if Config.DB is nil
+	dht             *dht.IpfsDHT     // nil if NoDiscover
+	connNotify      *connNotifier    // connection lifecycle tracker
+	onPeerConnected func()           // optional callback when a peer connects
 	seedPeers       map[peer.ID]bool // Seed peers are exempt from banning.
 
 	// Handshake fields.

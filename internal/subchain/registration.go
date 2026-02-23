@@ -21,7 +21,7 @@ type RegistrationData struct {
 	BlockTime         int      `json:"block_time"`                   // Seconds between blocks (>= 1)
 	BlockReward       uint64   `json:"block_reward"`                 // Base units per block
 	MaxSupply         uint64   `json:"max_supply"`                   // Total coin cap in base units
-	MinFeeRate        uint64   `json:"min_fee_rate"`                  // Minimum fee rate (base units per byte)
+	MinFeeRate        uint64   `json:"min_fee_rate"`                 // Minimum fee rate (base units per byte)
 	Validators        []string `json:"validators,omitempty"`         // PoA: hex-encoded 33-byte compressed pubkeys
 	InitialDifficulty uint64   `json:"initial_difficulty,omitempty"` // PoW: starting difficulty
 	DifficultyAdjust  int      `json:"difficulty_adjust,omitempty"`  // PoW: blocks between adjustments (0=disabled)

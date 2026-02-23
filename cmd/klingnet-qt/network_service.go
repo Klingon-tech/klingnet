@@ -29,7 +29,7 @@ type PeersInfo struct {
 
 // MempoolInfo describes the mempool state.
 type MempoolInfo struct {
-	Count  int    `json:"count"`
+	Count      int    `json:"count"`
 	MinFeeRate string `json:"min_fee_rate"`
 }
 
@@ -68,7 +68,7 @@ func (n *NetworkService) GetMempoolInfo() (*MempoolInfo, error) {
 		return nil, err
 	}
 	return &MempoolInfo{
-		Count:  result.Count,
+		Count:      result.Count,
 		MinFeeRate: formatAmount(result.MinFeeRate),
 	}, nil
 }

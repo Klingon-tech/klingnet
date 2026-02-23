@@ -3,6 +3,7 @@ package consensus
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -17,19 +18,30 @@ import (
 // Weighted difficulty constants (Clique-style).
 // In-turn blocks get higher difficulty so they always win fork choice.
 const (
-	DiffInTurn  uint64 = 2
-	DiffNoTurn  uint64 = 1
+	DiffInTurn uint64 = 2
+	DiffNoTurn uint64 = 1
+)
+
+// Suspension constants.
+const (
+	// SuspensionWindow is the number of blocks without production after which
+	// a validator is considered suspended. ~10 min at blockTime=3s.
+	SuspensionWindow uint64 = 200
+
+	// MinActiveValidators is the minimum number of validators that must remain
+	// active. Prevents total suspension when all validators are offline.
+	MinActiveValidators int = 1
 )
 
 // PoA errors.
 var (
-	ErrNoValidators        = errors.New("no validators configured")
-	ErrNotValidator        = errors.New("signer is not an authorized validator")
-	ErrMissingSig          = errors.New("block missing validator signature")
-	ErrInvalidSig          = errors.New("invalid validator signature")
-	ErrInsufficientStake   = errors.New("validator has insufficient stake")
-	ErrBadPoADifficulty = errors.New("incorrect PoA difficulty")
-	ErrInvalidBlockTime = errors.New("blockTime must be > 0")
+	ErrNoValidators      = errors.New("no validators configured")
+	ErrNotValidator      = errors.New("signer is not an authorized validator")
+	ErrMissingSig        = errors.New("block missing validator signature")
+	ErrInvalidSig        = errors.New("invalid validator signature")
+	ErrInsufficientStake = errors.New("validator has insufficient stake")
+	ErrBadPoADifficulty  = errors.New("incorrect PoA difficulty")
+	ErrInvalidBlockTime  = errors.New("blockTime must be > 0")
 )
 
 // PoA implements proof-of-authority consensus.
@@ -54,6 +66,13 @@ type PoA struct {
 	// stakeChecker verifies on-chain stake for non-genesis validators.
 	// nil means no staking required (backward compatible).
 	stakeChecker StakeChecker
+
+	// lastProduced tracks the most recent block height each validator produced.
+	// Key: hex-encoded compressed public key.
+	lastProduced map[string]uint64
+
+	// currentHeight is the chain height, updated via RecordBlockProduction.
+	currentHeight uint64
 }
 
 // sortValidators sorts the validator slice by public key bytes (ascending).
@@ -85,6 +104,7 @@ func NewPoA(validators [][]byte, blockTime int) (*PoA, error) {
 		Validators:        validators,
 		genesisValidators: genesis,
 		blockTime:         blockTime,
+		lastProduced:      make(map[string]uint64),
 	}, nil
 }
 
@@ -239,12 +259,16 @@ func (p *PoA) IsGenesisValidator(pubKey []byte) bool {
 // AddValidator adds a new public key to the validator set.
 // This allows dynamically staked validators to be accepted.
 // The set is re-sorted after insertion to maintain canonical ordering.
+// New validators receive a grace period: lastProduced is set to currentHeight
+// so they are not immediately suspended.
 func (p *PoA) AddValidator(pubKey []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.isValidator(pubKey) {
 		p.Validators = append(p.Validators, pubKey)
 		sortValidators(p.Validators)
+		// Grace period: treat as having just produced at currentHeight.
+		p.lastProduced[hex.EncodeToString(pubKey)] = p.currentHeight
 	}
 }
 
@@ -415,6 +439,167 @@ func (p *PoA) IsSelected(height uint64, prevHash types.Hash) bool {
 	}
 	selected := selectValidatorFromSet(p.Validators, height, prevHash)
 	return bytes.Equal(selected, p.signer.PublicKey())
+}
+
+// ── Validator suspension ─────────────────────────────────────────────
+
+// RecordBlockProduction updates the last-produced height for a validator
+// and advances currentHeight. If the validator was suspended, this
+// reactivates them.
+func (p *PoA) RecordBlockProduction(signer []byte, height uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	key := hex.EncodeToString(signer)
+	p.lastProduced[key] = height
+	if height > p.currentHeight {
+		p.currentHeight = height
+	}
+}
+
+// SetCurrentHeight sets the chain height without recording a specific signer.
+// Used during startup reconstruction.
+func (p *PoA) SetCurrentHeight(height uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.currentHeight = height
+}
+
+// ResetSuspensions clears all suspension tracking state.
+// Called before reconstructing from on-chain blocks.
+func (p *PoA) ResetSuspensions() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.lastProduced = make(map[string]uint64)
+	p.currentHeight = 0
+}
+
+// IsSuspended returns true if the validator has not produced a block within
+// the SuspensionWindow. Returns false if the chain is too young for
+// suspensions or if suspending this validator would violate MinActiveValidators.
+func (p *PoA) IsSuspended(pubKey []byte) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.isSuspendedLocked(pubKey)
+}
+
+// isSuspendedLocked checks suspension status with the lock already held.
+func (p *PoA) isSuspendedLocked(pubKey []byte) bool {
+	if pubKey == nil || p.currentHeight < SuspensionWindow {
+		return false
+	}
+
+	key := hex.EncodeToString(pubKey)
+	lastH, ok := p.lastProduced[key]
+	if !ok {
+		// Never produced — check if chain is old enough to suspend.
+		// Treat as produced at height 0, so suspended if currentHeight > SuspensionWindow.
+		if p.currentHeight > SuspensionWindow {
+			return !p.wouldViolateMinActive(pubKey)
+		}
+		return false
+	}
+
+	if p.currentHeight-lastH > SuspensionWindow {
+		return !p.wouldViolateMinActive(pubKey)
+	}
+	return false
+}
+
+// wouldViolateMinActive returns true if suspending pubKey would leave fewer
+// than MinActiveValidators active. Must be called with lock held.
+func (p *PoA) wouldViolateMinActive(pubKey []byte) bool {
+	active := p.effectiveSetLocked()
+	// If pubKey is already not in the active set, suspending doesn't change count.
+	inActive := false
+	for _, v := range active {
+		if bytes.Equal(v, pubKey) {
+			inActive = true
+			break
+		}
+	}
+	if !inActive {
+		return false
+	}
+	return len(active)-1 < MinActiveValidators
+}
+
+// EffectiveValidators returns the non-suspended validators in canonical order.
+// Falls back to the full set if too few would remain active.
+func (p *PoA) EffectiveValidators() [][]byte {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.effectiveSetLocked()
+}
+
+// effectiveSetLocked computes the effective (non-suspended) validator set.
+// Must be called with at least a read lock held.
+func (p *PoA) effectiveSetLocked() [][]byte {
+	if p.currentHeight < SuspensionWindow {
+		return append([][]byte(nil), p.Validators...)
+	}
+
+	var active [][]byte
+	for _, v := range p.Validators {
+		key := hex.EncodeToString(v)
+		lastH, ok := p.lastProduced[key]
+		if ok && p.currentHeight-lastH <= SuspensionWindow {
+			active = append(active, v)
+		} else if !ok && p.currentHeight <= SuspensionWindow {
+			active = append(active, v)
+		}
+	}
+
+	if len(active) < MinActiveValidators {
+		return append([][]byte(nil), p.Validators...)
+	}
+	return active
+}
+
+// BackupDelayEffective computes backup delay using the effective (non-suspended)
+// validator set. Suspended signers get a fixed blockTime delay.
+func (p *PoA) BackupDelayEffective(timestamp uint64) time.Duration {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.signer == nil {
+		return 0
+	}
+
+	pub := p.signer.PublicKey()
+
+	// Suspended signers get fixed blockTime delay.
+	if p.isSuspendedLocked(pub) {
+		return time.Duration(p.blockTime) * time.Second
+	}
+
+	effective := p.effectiveSetLocked()
+	if len(effective) <= 1 {
+		return 0
+	}
+
+	n := uint64(len(effective))
+	slot := (timestamp / uint64(p.blockTime)) % n
+
+	// Find signer's index in effective set.
+	signerIdx := int64(-1)
+	for i, v := range effective {
+		if bytes.Equal(v, pub) {
+			signerIdx = int64(i)
+			break
+		}
+	}
+	if signerIdx < 0 {
+		return 0
+	}
+
+	// Distance from in-turn slot (circular) in effective set.
+	dist := (uint64(signerIdx) - slot + n) % n
+	if dist == 0 {
+		return 0 // In-turn in effective set — no delay.
+	}
+
+	delayMs := dist * uint64(p.blockTime) * 500
+	return time.Duration(delayMs) * time.Millisecond
 }
 
 func isGenesisValidatorFromSet(genesisValidators [][]byte, pubKey []byte) bool {

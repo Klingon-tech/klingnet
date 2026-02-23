@@ -12,7 +12,7 @@ package tx
 // for stake outputs with 33-byte pubkeys, or 40 for token data per output).
 func EstimateTxFee(numInputs, numOutputs int, feeRate uint64, extraOutputBytes ...int) uint64 {
 	const overhead = 4 + 4 + 4 + 8   // version + inputCount + outputCount + locktime
-	const perInput = 32 + 4           // txID + index
+	const perInput = 32 + 4          // txID + index
 	const perOutput = 8 + 1 + 4 + 20 // value + scriptType + scriptDataLen + P2PKH addr
 
 	extra := 0

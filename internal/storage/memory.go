@@ -68,8 +68,8 @@ func (m *MemoryDB) NewBatch() Batch {
 }
 
 type memoryBatchOp struct {
-	key    string
-	value  []byte // nil means delete
+	key   string
+	value []byte // nil means delete
 }
 
 type memoryBatch struct {

@@ -14,7 +14,6 @@ Key files:
 - `STRUCTURE.md` — Project folder organization
 - `config/genesis.go` — Protocol rules (immutable)
 - `config/config.go` — Node settings (runtime)
-- `cmd/testnet/main.go` — 2-node local testnet launcher
 - `cmd/klingnet-cli/main.go` — CLI tool (wallet + query + sub-chain commands)
 - `cmd/klingnetd/main.go` — Full node daemon
 - `internal/rpcclient/client.go` — JSON-RPC 2.0 client library
@@ -376,38 +375,6 @@ str := formatAmount(raw)      // → "10.500000000000"
 
 ---
 
-## Testnet Launcher (`cmd/testnet/main.go`)
-
-The testnet is the **integration smoke test** for the entire stack. Keep it working after every change.
-
-```bash
-# Run the 2-node testnet (produces 10 blocks, ~30s)
-go run ./cmd/testnet/
-```
-
-**What it does:**
-1. Generates a validator key + genesis config (PoA, 1 validator)
-2. Boots 2 in-process nodes (MemoryDB, no disk cleanup needed)
-3. Node-1 produces blocks, gossips via libp2p GossipSub to node-2
-4. Verifies both chains converge at the same height + tip hash
-
-**When to update the testnet:**
-- Adding new consensus rules or validation checks
-- Changing block structure, transaction format, or UTXO handling
-- Modifying P2P gossip or chain processing
-- Changing genesis config structure
-
-**Components wired together:**
-- `config.Genesis` → `chain.InitFromGenesis` → `chain.ProcessBlock`
-- `consensus.PoA` → `miner.ProduceBlock` → `engine.Seal`
-- `mempool.Pool` → `miner.SelectForBlock`
-- `p2p.Node` → `BroadcastBlock` / `SetBlockHandler`
-- `miner.UTXOAdapter` bridges `utxo.Set` to `tx.UTXOProvider`
-
-**Key invariant:** After any code change, `go run ./cmd/testnet/` must print `SUCCESS: Both nodes converged`.
-
----
-
 ## Reminders
 
 - [ ] Update `README.md` when adding new features or changing CLI
@@ -457,9 +424,6 @@ go vet ./...
 
 # Run specific test
 go test -run TestName ./path/to/package
-
-# Run 2-node testnet (integration smoke test)
-go run ./cmd/testnet/
 
 # Run end-to-end CLI test (builds, starts node, tests commands)
 ./scripts/test-cli.sh

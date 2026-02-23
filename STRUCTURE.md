@@ -26,9 +26,6 @@ klingnet-chain/
 │   │       │   └── utils/      (format.ts, types.ts)
 │   │       └── wailsjs/       # Wails Go binding stubs
 │   │
-│   └── testnet/               # 2-node local testnet launcher
-│       └── main.go
-│
 ├── pkg/                       # Public library (importable by others)
 │   ├── types/                 # Core primitives
 │   │   ├── hash.go

@@ -503,9 +503,10 @@ func (s *Server) handleValidatorGetStatus(req *Request) (interface{}, *Error) {
 
 func buildValidatorStatus(tracker *consensus.ValidatorTracker, poa *consensus.PoA, pubKey []byte) ValidatorStatusResult {
 	result := ValidatorStatusResult{
-		PubKey:    hex.EncodeToString(pubKey),
-		IsGenesis: poa.IsGenesisValidator(pubKey),
-		IsOnline:  tracker.IsOnline(pubKey),
+		PubKey:      hex.EncodeToString(pubKey),
+		IsGenesis:   poa.IsGenesisValidator(pubKey),
+		IsOnline:    tracker.IsOnline(pubKey),
+		IsSuspended: poa.IsSuspended(pubKey),
 	}
 
 	stats := tracker.GetStats(pubKey)

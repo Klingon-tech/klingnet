@@ -275,6 +275,7 @@ func New(cfg *config.Config) (*Node, error) {
 			if poaEngine != nil {
 				if signer := poaEngine.IdentifySigner(blk.Header); signer != nil {
 					tracker.RecordBlock(signer)
+					poaEngine.RecordBlockProduction(signer, blk.Header.Height)
 				}
 			}
 
@@ -516,7 +517,12 @@ func New(cfg *config.Config) (*Node, error) {
 
 // Start launches background goroutines: startup sync, sync loop, miner, heartbeat.
 func (n *Node) Start() error {
-	// Startup sync.
+	// Wire reorg handler to re-reconstruct suspensions after chain reorganization.
+	n.ch.SetReorgHandler(func() {
+		n.reconstructSuspensions()
+	})
+
+	// Startup sync (reconstructSuspensions runs at the end of each sync path).
 	if n.p2pNode != nil && n.syncer != nil {
 		n.runStartupSync()
 		n.wg.Add(1)
@@ -525,6 +531,10 @@ func (n *Node) Start() error {
 			n.runSyncLoop()
 		}()
 	}
+
+	// Reconstruct suspension state after sync. This covers the no-peers case
+	// (sync is a no-op) and ensures state is fresh before mining starts.
+	n.reconstructSuspensions()
 
 	// Mining.
 	if n.cfg.Mining.Enabled {
@@ -649,6 +659,15 @@ func (n *Node) runStartupSync() {
 		return // Another sync is already running.
 	}
 	defer n.rootSyncing.Store(false)
+
+	// Rebuild suspension state if any blocks were applied during sync.
+	startHeight := n.ch.Height()
+	defer func() {
+		if n.ch.Height() != startHeight {
+			n.reconstructSuspensions()
+		}
+	}()
+
 	peers := n.p2pNode.PeerList()
 	if len(peers) == 0 {
 		n.logger.Info().Msg("No peers for startup sync")
@@ -810,6 +829,14 @@ func (n *Node) resolveFork(candidates []syncPeer, failedHeight, peerTip uint64) 
 		return
 	}
 
+	// Rebuild suspension state if any blocks were applied during fork resolution.
+	startHeight := n.ch.Height()
+	defer func() {
+		if n.ch.Height() != startHeight {
+			n.reconstructSuspensions()
+		}
+	}()
+
 	searchFrom := failedHeight - 1
 	if searchFrom > n.ch.Height() {
 		searchFrom = n.ch.Height()
@@ -941,6 +968,72 @@ func (n *Node) resolveFork(candidates []syncPeer, failedHeight, peerTip uint64) 
 		Msg("Fork resolved")
 }
 
+// ── Suspension reconstruction ────────────────────────────────────────
+
+// reconstructSuspensions rebuilds the PoA suspension state from on-chain blocks.
+// Called at startup before mining and after reorgs.
+func (n *Node) reconstructSuspensions() {
+	if n.poaEngine == nil {
+		return
+	}
+
+	n.poaEngine.ResetSuspensions()
+	height := n.ch.Height()
+	n.poaEngine.SetCurrentHeight(height)
+
+	// Scan the last SuspensionWindow blocks.
+	var startH uint64
+	if height > consensus.SuspensionWindow {
+		startH = height - consensus.SuspensionWindow
+	}
+
+	var active, suspended int
+	for h := startH; h <= height; h++ {
+		blk, err := n.ch.GetBlockByHeight(h)
+		if err != nil {
+			continue
+		}
+		if signer := n.poaEngine.IdentifySigner(blk.Header); signer != nil {
+			n.poaEngine.RecordBlockProduction(signer, h)
+		}
+	}
+
+	// Count active/suspended for logging.
+	for _, v := range n.poaEngine.EffectiveValidators() {
+		_ = v
+		active++
+	}
+	suspended = n.poaEngine.ValidatorCount() - active
+
+	n.logger.Info().
+		Int("active", active).
+		Int("suspended", suspended).
+		Uint64("window", consensus.SuspensionWindow).
+		Msg("Suspension state reconstructed from chain")
+}
+
+// reconstructSubChainSuspensions rebuilds suspension state for a sub-chain PoA engine.
+func (n *Node) reconstructSubChainSuspensions(ch *chain.Chain, poaEng *consensus.PoA) {
+	poaEng.ResetSuspensions()
+	height := ch.Height()
+	poaEng.SetCurrentHeight(height)
+
+	var startH uint64
+	if height > consensus.SuspensionWindow {
+		startH = height - consensus.SuspensionWindow
+	}
+
+	for h := startH; h <= height; h++ {
+		blk, err := ch.GetBlockByHeight(h)
+		if err != nil {
+			continue
+		}
+		if signer := poaEng.IdentifySigner(blk.Header); signer != nil {
+			poaEng.RecordBlockProduction(signer, h)
+		}
+	}
+}
+
 // ── Mining ──────────────────────────────────────────────────────────
 
 func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
@@ -974,22 +1067,29 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 		nextHeight := n.ch.Height() + 1
 		now := uint64(time.Now().Unix())
 
+		// NOTE: Suspended validators are NOT blocked from in-turn production.
+		// This is intentional — producing an in-turn block (DiffInTurn=2) is
+		// the reactivation mechanism. The block beats any backup's DiffNoTurn=1,
+		// and RecordBlockProduction clears the suspension automatically.
+
 		// Time-slot-based election: check if we're in-turn.
 		if n.poaEngine != nil && !n.poaEngine.IsInTurn(now) {
 			// Not in-turn. Identify the expected in-turn validator.
 			expectedPub := n.poaEngine.SlotValidator(now)
 
-			// If the in-turn validator is online, don't produce.
-			if n.tracker != nil && expectedPub != nil && n.tracker.IsOnline(expectedPub) {
+			// Only defer to the in-turn validator if they are online AND not suspended.
+			isSuspended := n.poaEngine.IsSuspended(expectedPub)
+			if !isSuspended && n.tracker != nil && expectedPub != nil && n.tracker.IsOnline(expectedPub) {
 				continue
 			}
 
-			// In-turn validator appears offline. Wait staggered backup delay
-			// (proportional to our distance from the in-turn slot).
-			delay := n.poaEngine.BackupDelay(now)
+			// In-turn validator appears offline or suspended. Wait staggered
+			// backup delay using the effective (non-suspended) validator set.
+			delay := n.poaEngine.BackupDelayEffective(now)
 			n.logger.Debug().
 				Uint64("height", nextHeight).
 				Dur("backup_delay", delay).
+				Bool("in_turn_suspended", isSuspended).
 				Msg("Not in-turn, waiting backup delay")
 
 			select {
@@ -1036,9 +1136,12 @@ func (n *Node) runMiner(m *miner.Miner, blockTime time.Duration) {
 		}
 		n.pool.RemoveConfirmed(blk.Transactions)
 
-		if n.poaEngine != nil && n.tracker != nil {
+		if n.poaEngine != nil {
 			if signer := n.poaEngine.IdentifySigner(blk.Header); signer != nil {
-				n.tracker.RecordBlock(signer)
+				if n.tracker != nil {
+					n.tracker.RecordBlock(signer)
+				}
+				n.poaEngine.RecordBlockProduction(signer, blk.Header.Height)
 			}
 		}
 
@@ -1291,6 +1394,15 @@ func (n *Node) handleSubChainSpawn(chainID types.ChainID, sr *subchain.SpawnResu
 		if n.rpcServer != nil {
 			n.rpcServer.SetSubChainTracker(idHex, scTracker)
 		}
+
+		// Reconstruct suspension state from sub-chain blocks.
+		n.reconstructSubChainSuspensions(sr.Chain, scPoA)
+
+		// Wire reorg handler to re-reconstruct suspensions.
+		scPoALocal := scPoA
+		sr.Chain.SetReorgHandler(func() {
+			n.reconstructSubChainSuspensions(sr.Chain, scPoALocal)
+		})
 	}
 
 	if n.p2pNode != nil && n.syncer != nil {
@@ -1329,7 +1441,7 @@ func (n *Node) handleSubChainSpawn(chainID types.ChainID, sr *subchain.SpawnResu
 				if errors.Is(err, chain.ErrPrevNotFound) && syncing.CompareAndSwap(false, true) {
 					go func() {
 						defer syncing.Store(false)
-						n.runSubChainSync(sr.Chain, sr.Pool, idHex, scLog)
+						n.runSubChainSync(sr.Chain, sr.Pool, idHex, scLog, scPoA)
 					}()
 				} else if !errors.Is(err, chain.ErrBlockKnown) &&
 					!errors.Is(err, chain.ErrPrevNotFound) &&
@@ -1340,9 +1452,12 @@ func (n *Node) handleSubChainSpawn(chainID types.ChainID, sr *subchain.SpawnResu
 			}
 			sr.Pool.RemoveConfirmed(blk.Transactions)
 
-			if scPoA != nil && scTracker != nil {
+			if scPoA != nil {
 				if signer := scPoA.IdentifySigner(blk.Header); signer != nil {
-					scTracker.RecordBlock(signer)
+					if scTracker != nil {
+						scTracker.RecordBlock(signer)
+					}
+					scPoA.RecordBlockProduction(signer, blk.Header.Height)
 				}
 			}
 
@@ -1368,7 +1483,7 @@ func (n *Node) handleSubChainSpawn(chainID types.ChainID, sr *subchain.SpawnResu
 		// Sync first, then start miners. This prevents the miner from
 		// producing blocks on a stale fork while the sync is catching up.
 		go func() {
-			n.runSubChainSync(sr.Chain, sr.Pool, idHex, scLog)
+			n.runSubChainSync(sr.Chain, sr.Pool, idHex, scLog, scPoA)
 			n.startSubChainMiners(chainID, sr, scPoA, scTracker, mineFilter, scCoinbase, scLog)
 		}()
 	} else {
@@ -1424,7 +1539,7 @@ func (n *Node) handleSubChainStop(chainID types.ChainID) {
 
 // ── Sub-chain sync ──────────────────────────────────────────────────
 
-func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex string, logger zerolog.Logger) {
+func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex string, logger zerolog.Logger, poaEng ...*consensus.PoA) {
 	if n.p2pNode == nil || n.syncer == nil {
 		return
 	}
@@ -1432,6 +1547,14 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 	if len(peers) == 0 {
 		return
 	}
+
+	// Rebuild sub-chain suspension state if any blocks were applied during sync.
+	startHeight := ch.Height()
+	defer func() {
+		if len(poaEng) > 0 && poaEng[0] != nil && ch.Height() != startHeight {
+			n.reconstructSubChainSuspensions(ch, poaEng[0])
+		}
+	}()
 
 	// Query peers for sub-chain height and collect candidates sorted by height.
 	var candidates []syncPeer
@@ -1469,7 +1592,7 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 			logger.Info().
 				Uint64("height", localHeight).
 				Msg("Same-height sub-chain fork detected, resolving")
-			n.resolveSubChainFork(ch, pool, candidates, chainIDHex, localHeight, best.height, logger)
+			n.resolveSubChainFork(ch, pool, candidates, chainIDHex, localHeight, best.height, logger, poaEng...)
 		}
 		return
 	}
@@ -1539,7 +1662,7 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 					logger.Info().
 						Uint64("height", blk.Header.Height).
 						Msg("Fork detected during sub-chain sync, resolving")
-					n.resolveSubChainFork(ch, pool, candidates[peerIdx:], chainIDHex, blk.Header.Height, best.height, logger)
+					n.resolveSubChainFork(ch, pool, candidates[peerIdx:], chainIDHex, blk.Header.Height, best.height, logger, poaEng...)
 					return
 				}
 				logger.Warn().Err(err).Uint64("height", blk.Header.Height).Msg("Sub-chain sync block failed")
@@ -1577,12 +1700,20 @@ func (n *Node) runSubChainSync(ch *chain.Chain, pool *mempool.Pool, chainIDHex s
 }
 
 func (n *Node) resolveSubChainFork(ch *chain.Chain, pool *mempool.Pool,
-	candidates []syncPeer, chainIDHex string, failedHeight, peerTip uint64, logger zerolog.Logger) {
+	candidates []syncPeer, chainIDHex string, failedHeight, peerTip uint64, logger zerolog.Logger, poaEng ...*consensus.PoA) {
 
 	if len(candidates) == 0 {
 		logger.Warn().Msg("Sub-chain fork resolution failed: no candidates")
 		return
 	}
+
+	// Rebuild sub-chain suspension state if any blocks were applied during fork resolution.
+	startHeight := ch.Height()
+	defer func() {
+		if len(poaEng) > 0 && poaEng[0] != nil && ch.Height() != startHeight {
+			n.reconstructSubChainSuspensions(ch, poaEng[0])
+		}
+	}()
 
 	searchFrom := failedHeight - 1
 	if searchFrom > ch.Height() {
@@ -1807,17 +1938,21 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 		nextHeight := ch.Height() + 1
 		now := uint64(time.Now().Unix())
 
+		// NOTE: Suspended validators are NOT blocked from in-turn production.
+		// Producing an in-turn block (DiffInTurn=2) is the reactivation path.
+
 		// Time-slot-based election: check if we're in-turn.
 		if !poaEngine.IsInTurn(now) {
 			expectedPub := poaEngine.SlotValidator(now)
 
-			// If the in-turn validator is online, don't produce.
-			if tracker != nil && expectedPub != nil && tracker.IsOnline(expectedPub) {
+			// Only defer to the in-turn validator if online AND not suspended.
+			isSuspended := poaEngine.IsSuspended(expectedPub)
+			if !isSuspended && tracker != nil && expectedPub != nil && tracker.IsOnline(expectedPub) {
 				continue
 			}
 
-			// In-turn validator appears offline. Wait staggered backup delay.
-			delay := poaEngine.BackupDelay(now)
+			// In-turn validator appears offline or suspended. Use effective delay.
+			delay := poaEngine.BackupDelayEffective(now)
 			select {
 			case <-ctx.Done():
 				return
@@ -1858,10 +1993,11 @@ func (n *Node) runSubChainPoAMiner(ctx context.Context, m *miner.Miner, ch *chai
 		}
 		pool.RemoveConfirmed(blk.Transactions)
 
-		if tracker != nil {
-			if signer := poaEngine.IdentifySigner(blk.Header); signer != nil {
+		if signer := poaEngine.IdentifySigner(blk.Header); signer != nil {
+			if tracker != nil {
 				tracker.RecordBlock(signer)
 			}
+			poaEngine.RecordBlockProduction(signer, blk.Header.Height)
 		}
 
 		if n.p2pNode != nil {

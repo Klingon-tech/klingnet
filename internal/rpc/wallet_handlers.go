@@ -1614,7 +1614,7 @@ func (s *Server) handleWalletSendToken(req *Request) (interface{}, *Error) {
 	if tokenSum > params.Amount {
 		numTokenOutputs = 2 // token recipient + token change
 	}
-	numInputsEst := len(selectedTokenUTXOs) + 1 // token inputs + at least 1 KGX input
+	numInputsEst := len(selectedTokenUTXOs) + 1                       // token inputs + at least 1 KGX input
 	fee := tx.EstimateTxFee(numInputsEst, numTokenOutputs+1, feeRate) // +1 for KGX change
 	kgxSelection, selErr := wallet.SelectCoins(kgxUTXOs, fee)
 	if selErr == nil {

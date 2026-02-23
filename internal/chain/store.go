@@ -12,15 +12,15 @@ import (
 
 // Key prefixes and state keys for the block store.
 var (
-	prefixBlock  = []byte("b/") // b/<hash(32)> -> block JSON
-	prefixHeight = []byte("h/") // h/<height(8)> -> hash(32)
-	prefixTx     = []byte("x/") // x/<txhash(32)> -> height(8) + blockHash(32)
-	prefixUndo   = []byte("d/") // d/<hash(32)> -> undo data JSON
-	keyTipHash          = []byte("s/tip")
-	keyHeight           = []byte("s/height")
-	keySupply           = []byte("s/supply")
-	keyCumDifficulty    = []byte("s/cumdiff")
-	keyReorgCheckpoint  = []byte("s/reorg")
+	prefixBlock        = []byte("b/") // b/<hash(32)> -> block JSON
+	prefixHeight       = []byte("h/") // h/<height(8)> -> hash(32)
+	prefixTx           = []byte("x/") // x/<txhash(32)> -> height(8) + blockHash(32)
+	prefixUndo         = []byte("d/") // d/<hash(32)> -> undo data JSON
+	keyTipHash         = []byte("s/tip")
+	keyHeight          = []byte("s/height")
+	keySupply          = []byte("s/supply")
+	keyCumDifficulty   = []byte("s/cumdiff")
+	keyReorgCheckpoint = []byte("s/reorg")
 )
 
 // BlockStore persists blocks and chain metadata to a storage.DB.

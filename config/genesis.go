@@ -124,7 +124,7 @@ type ConsensusRules struct {
 	BlockReward     uint64 `json:"block_reward"`               // Base units per block
 	MaxSupply       uint64 `json:"max_supply"`                 // Total coin cap in base units (0 = unlimited)
 	HalvingInterval uint64 `json:"halving_interval,omitempty"` // Blocks between reward halvings (0 = no halving)
-	MinFeeRate      uint64 `json:"min_fee_rate"`                // Minimum fee rate (base units per byte of SigningBytes)
+	MinFeeRate      uint64 `json:"min_fee_rate"`               // Minimum fee rate (base units per byte of SigningBytes)
 
 	// Staking
 	ValidatorStake uint64 `json:"validator_stake,omitempty"` // Min stake to become validator (base units, 0 = no staking)

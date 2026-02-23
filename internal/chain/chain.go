@@ -32,6 +32,10 @@ type UnstakeHandler func(pubKey []byte)
 // that are not present in the new branch (for mempool re-insertion).
 type RevertedTxHandler func(txs []*tx.Transaction)
 
+// ReorgHandler is called after a reorg completes. Used to trigger
+// suspension state reconstruction from on-chain blocks.
+type ReorgHandler func()
+
 // Chain represents a blockchain instance with state, storage, and consensus.
 type Chain struct {
 	mu        sync.Mutex // Protects all state mutations (ProcessBlock, Reorg).
@@ -52,6 +56,7 @@ type Chain struct {
 	stakeHandler          StakeHandler
 	unstakeHandler        UnstakeHandler
 	revertedTxHandler     RevertedTxHandler
+	reorgHandler          ReorgHandler
 }
 
 // New creates a new chain with the given components.
@@ -88,8 +93,8 @@ func New(id types.ChainID, db storage.DB, utxoSet utxo.Set, engine consensus.Eng
 	}
 
 	ch := &Chain{
-		ID:    id,
-		state: &State{TipHash: tipHash, Height: height, Supply: supply, CumulativeDifficulty: cumDiff, TipTimestamp: tipTimestamp},
+		ID:          id,
+		state:       &State{TipHash: tipHash, Height: height, Supply: supply, CumulativeDifficulty: cumDiff, TipTimestamp: tipTimestamp},
 		blocks:      blocks,
 		utxos:       utxoSet,
 		engine:      engine,
@@ -228,6 +233,11 @@ func (c *Chain) SetUnstakeHandler(fn UnstakeHandler) {
 // These transactions should be re-added to the mempool if they are still valid.
 func (c *Chain) SetRevertedTxHandler(fn RevertedTxHandler) {
 	c.revertedTxHandler = fn
+}
+
+// SetReorgHandler sets the callback invoked after a reorg completes.
+func (c *Chain) SetReorgHandler(fn ReorgHandler) {
+	c.reorgHandler = fn
 }
 
 // getBlockTimestamp returns the timestamp of a block at the given height.

@@ -22,7 +22,6 @@ A UTXO-based blockchain written in Go with flat sub-chain architecture, Schnorr 
 | Mempool | Done | UTXO validation on entry, conflict detection, fee-rate ordering, min fee, coinbase maturity, token validation |
 | Block producer | Done | Coinbase + fee collection, merkle root, PoA sealing, supply cap, validator priority scheduling |
 | P2P networking | Done | libp2p, GossipSub, mDNS + Kademlia DHT discovery, peer persistence, chain sync, height protocol |
-| 2-node testnet | Done | Full integration — produces blocks, gossips, verifies convergence |
 | 3-node testnet | Done | Shell script: build, init, start 3 nodes, import wallets, validator mining |
 | Config system | Done | Genesis rules, node config, CLI flags, config file |
 | Validator staking | Done | Lock coins to ScriptTypeStake UTXO, auto-register, unstake with cooldown, validator removal |
@@ -39,41 +38,6 @@ A UTXO-based blockchain written in Go with flat sub-chain architecture, Schnorr 
 - Script evaluation engine — type-matching works fine for current use cases
 
 ## Quick Start
-
-### Run the Local Testnet
-
-This is the fastest way to see the chain running. It boots 2 in-process nodes, produces 10 blocks via PoA, gossips them over libp2p, and verifies both chains converge.
-
-```bash
-go run ./cmd/testnet/
-```
-
-Expected output:
-```
-=== Klingnet 2-Node Local Testnet ===
-Validator key generated          validator_pub=a1b2c3... coinbase_addr=d4e5f6...
-Genesis config created           chain_id=klingnet-testnet-local
-Genesis initialized on both nodes node1_height=0 node2_height=0
-P2P nodes started                node1_id=12D3Koo... node2_id=12D3Koo...
-Nodes connected                  node1_peers=1 node2_peers=1
-Starting block production        blocks=10 interval=3s
-Block produced                   height=1 hash=ab12cd... txs=1 reward=1000000000
-Block received and applied       height=1 hash=ab12cd...
-...
-Block produced                   height=10 ...
-Final chain state                node1_height=10 node2_height=10 ...
-SUCCESS: Both nodes converged — chains match!
-
-  Blocks produced:  10
-  Chain tip:        ab12cd34...
-  Genesis alloc:    200000 coins
-  Block reward:     0.02 coins
-  Min fee:          0.000001 coins
-  Max supply:       2000000 coins
-  Decimals:         12
-```
-
-The testnet runs for ~30 seconds. Press `Ctrl+C` for early shutdown.
 
 ### Run a 3-Node Manual Testnet
 
@@ -717,8 +681,7 @@ klingnet-chain/
 ├── cmd/
 │   ├── klingnetd/              # Full node daemon
 │   ├── klingnet-cli/           # CLI client (wallet + query commands)
-│   ├── klingnet-qt/            # Desktop GUI (Wails v2 + React)
-│   └── testnet/               # 2-node local testnet launcher
+│   └── klingnet-qt/            # Desktop GUI (Wails v2 + React)
 ├── pkg/                       # Public API
 │   ├── types/                 # Hash, Address, Outpoint, Script, TokenData
 │   ├── tx/                    # Transaction, Builder, validation
@@ -778,9 +741,6 @@ make build-windows-amd64
 make build-qt-linux   # Requires webkit2gtk4.1-devel
 make build-qt-darwin  # Requires Xcode CLI tools
 make build-qt-windows # Requires WebView2 runtime
-
-# Run the 2-node testnet (integration smoke test)
-go run ./cmd/testnet/
 
 # Run end-to-end CLI test against a live node
 ./scripts/test-cli.sh

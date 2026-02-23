@@ -34,12 +34,12 @@ type entry struct {
 
 // Pool holds unconfirmed transactions.
 type Pool struct {
-	mu      sync.RWMutex
-	txs     map[types.Hash]*entry         // txHash -> entry
-	spends  map[types.Outpoint]types.Hash // outpoint -> txHash (conflict index)
-	maxSize int
+	mu         sync.RWMutex
+	txs        map[types.Hash]*entry         // txHash -> entry
+	spends     map[types.Outpoint]types.Hash // outpoint -> txHash (conflict index)
+	maxSize    int
 	minFeeRate uint64 // Minimum fee rate in base units per byte (0 = no minimum).
-	utxos   tx.UTXOProvider
+	utxos      tx.UTXOProvider
 
 	// Coinbase maturity checking.
 	utxoSet          utxo.Set      // For maturity checks (nil = disabled).
