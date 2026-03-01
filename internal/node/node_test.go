@@ -185,6 +185,79 @@ func TestNodeLifecycle(t *testing.T) {
 	n.Stop()
 }
 
+func TestInitialSyncDone_ClosedAfterStart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	tmpDir := t.TempDir()
+
+	cfg := config.Default(config.Testnet)
+	cfg.DataDir = tmpDir
+	cfg.P2P.Port = 0
+	cfg.P2P.NoDiscover = true
+	cfg.P2P.Seeds = nil
+	cfg.RPC.Port = 0
+	cfg.Wallet.Enabled = false
+
+	if err := config.EnsureDataDirs(cfg); err != nil {
+		t.Fatalf("EnsureDataDirs: %v", err)
+	}
+
+	n, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Channel should not be closed before Start().
+	select {
+	case <-n.initialSyncDone:
+		t.Fatal("initialSyncDone should not be closed before Start()")
+	default:
+		// Good — channel is open.
+	}
+
+	if err := n.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// After Start(), initialSyncDone must be closed.
+	select {
+	case <-n.initialSyncDone:
+		// Good — channel is closed.
+	default:
+		t.Fatal("initialSyncDone should be closed after Start()")
+	}
+
+	n.Stop()
+}
+
+func TestRootSyncing_BlockHandlerSkips(t *testing.T) {
+	// Verify that the rootSyncing flag can be set and read atomically.
+	// The actual block-handler integration requires a full P2P setup,
+	// so we test the flag mechanism in isolation.
+	n := &Node{}
+
+	if n.rootSyncing.Load() {
+		t.Fatal("rootSyncing should be false initially")
+	}
+
+	n.rootSyncing.Store(true)
+	if !n.rootSyncing.Load() {
+		t.Fatal("rootSyncing should be true after Store(true)")
+	}
+
+	// CompareAndSwap should fail when already true.
+	if n.rootSyncing.CompareAndSwap(false, true) {
+		t.Fatal("CAS(false,true) should fail when already true")
+	}
+
+	n.rootSyncing.Store(false)
+	if !n.rootSyncing.CompareAndSwap(false, true) {
+		t.Fatal("CAS(false,true) should succeed when false")
+	}
+}
+
 func TestLoadFromFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
