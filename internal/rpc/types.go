@@ -296,6 +296,20 @@ type WalletExportKeyParam struct {
 	Index    uint32 `json:"index"`
 }
 
+// WalletGetPubKeyParam is used by wallet_getPubKey.
+type WalletGetPubKeyParam struct {
+	Name     string `json:"name"`
+	Password string `json:"password"`
+	Account  uint32 `json:"account"`
+	Index    uint32 `json:"index"`
+}
+
+// WalletGetPubKeyResult is returned by wallet_getPubKey.
+type WalletGetPubKeyResult struct {
+	PubKey  string `json:"pubkey"`
+	Address string `json:"address"`
+}
+
 // WalletStakeParam is used by wallet_stake.
 type WalletStakeParam struct {
 	Name     string `json:"name"`

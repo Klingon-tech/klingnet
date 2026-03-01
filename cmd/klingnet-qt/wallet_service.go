@@ -123,6 +123,12 @@ type MintTokenResult struct {
 	TokenID string `json:"token_id"`
 }
 
+// PubKeyResult is returned by GetPubKey.
+type PubKeyResult struct {
+	PubKey  string `json:"pubkey"`
+	Address string `json:"address"`
+}
+
 // ExportKeyResult is returned by ExportValidatorKey.
 type ExportKeyResult struct {
 	PrivateKey string `json:"private_key"`
@@ -677,5 +683,23 @@ func (w *WalletService) ExportValidatorKey(name, password string, account, index
 		PrivateKey: result.PrivateKey,
 		PubKey:     result.PubKey,
 		Address:    result.Address,
+	}, nil
+}
+
+// GetPubKey returns the compressed public key and address for a wallet account.
+// Unlike ExportValidatorKey, this never exposes the private key.
+func (w *WalletService) GetPubKey(name, password string, account, index uint32) (*PubKeyResult, error) {
+	var result rpc.WalletGetPubKeyResult
+	if err := w.app.rpcClient().Call("wallet_getPubKey", rpc.WalletGetPubKeyParam{
+		Name:     name,
+		Password: password,
+		Account:  account,
+		Index:    index,
+	}, &result); err != nil {
+		return nil, err
+	}
+	return &PubKeyResult{
+		PubKey:  result.PubKey,
+		Address: result.Address,
 	}, nil
 }

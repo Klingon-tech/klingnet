@@ -363,6 +363,8 @@ func (s *Server) dispatch(req *Request) (interface{}, *Error) {
 		return s.handleWalletSendMany(req)
 	case "wallet_exportKey":
 		return s.handleWalletExportKey(req)
+	case "wallet_getPubKey":
+		return s.handleWalletGetPubKey(req)
 	case "wallet_stake":
 		return s.handleWalletStake(req)
 	case "wallet_mintToken":

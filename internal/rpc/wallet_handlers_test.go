@@ -666,6 +666,83 @@ func TestRPC_WalletExportKey(t *testing.T) {
 	}
 }
 
+// ── Wallet getPubKey ────────────────────────────────────────────────────
+
+func TestRPC_WalletGetPubKey(t *testing.T) {
+	env := setupWalletTestEnv(t)
+
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+	importResp := rpcCall(t, env.url, "wallet_import", WalletImportParam{
+		Name: "pubkey-test", Password: "pass", Mnemonic: mnemonic,
+	})
+	if importResp.Error != nil {
+		t.Fatalf("import: %s", importResp.Error.Message)
+	}
+
+	var importResult WalletImportResult
+	d, _ := json.Marshal(importResp.Result)
+	json.Unmarshal(d, &importResult)
+
+	// Get public key for account 0, index 0.
+	resp := rpcCall(t, env.url, "wallet_getPubKey", WalletGetPubKeyParam{
+		Name: "pubkey-test", Password: "pass", Account: 0, Index: 0,
+	})
+	if resp.Error != nil {
+		t.Fatalf("wallet_getPubKey error: %s", resp.Error.Message)
+	}
+
+	data, _ := json.Marshal(resp.Result)
+	var result WalletGetPubKeyResult
+	json.Unmarshal(data, &result)
+
+	if result.PubKey == "" {
+		t.Error("pubkey should not be empty")
+	}
+	if result.Address == "" {
+		t.Error("address should not be empty")
+	}
+
+	// Verify pubkey is 33 bytes hex (66 chars, compressed).
+	if len(result.PubKey) != 66 {
+		t.Errorf("pubkey hex length = %d, want 66", len(result.PubKey))
+	}
+
+	// Address should match the imported wallet's first address.
+	if result.Address != importResult.Address {
+		t.Errorf("address = %s, want %s", result.Address, importResult.Address)
+	}
+
+	// Cross-check: exportKey for same account should return the same pubkey.
+	exportResp := rpcCall(t, env.url, "wallet_exportKey", WalletExportKeyParam{
+		Name: "pubkey-test", Password: "pass", Account: 0, Index: 0,
+	})
+	if exportResp.Error != nil {
+		t.Fatalf("wallet_exportKey error: %s", exportResp.Error.Message)
+	}
+	exportData, _ := json.Marshal(exportResp.Result)
+	var exportResult WalletExportKeyResult
+	json.Unmarshal(exportData, &exportResult)
+
+	if result.PubKey != exportResult.PubKey {
+		t.Errorf("getPubKey pubkey = %s, exportKey pubkey = %s", result.PubKey, exportResult.PubKey)
+	}
+}
+
+func TestRPC_WalletGetPubKey_InvalidPassword(t *testing.T) {
+	env := setupWalletTestEnv(t)
+
+	rpcCall(t, env.url, "wallet_import", WalletImportParam{
+		Name: "pubkey-bad", Password: "correct", Mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+	})
+
+	resp := rpcCall(t, env.url, "wallet_getPubKey", WalletGetPubKeyParam{
+		Name: "pubkey-bad", Password: "wrong", Account: 0, Index: 0,
+	})
+	if resp.Error == nil {
+		t.Fatal("expected error for wrong password")
+	}
+}
+
 // ── Wallet mint token ───────────────────────────────────────────────────
 
 func TestRPC_WalletMintToken(t *testing.T) {

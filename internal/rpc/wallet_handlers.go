@@ -1047,6 +1047,47 @@ func (s *Server) handleWalletExportKey(req *Request) (interface{}, *Error) {
 	return result, nil
 }
 
+func (s *Server) handleWalletGetPubKey(req *Request) (interface{}, *Error) {
+	if err := s.requireWallet(); err != nil {
+		return nil, err
+	}
+
+	var params WalletGetPubKeyParam
+	if err := parseParams(req, &params); err != nil {
+		return nil, err
+	}
+	if params.Name == "" || params.Password == "" {
+		return nil, &Error{Code: CodeInvalidParams, Message: "name and password are required"}
+	}
+
+	seed, loadErr := s.keystore.Load(params.Name, []byte(params.Password))
+	if loadErr != nil {
+		s.logger.Debug().Err(loadErr).Msg("wallet load failed")
+		return nil, &Error{Code: CodeInvalidParams, Message: "invalid wallet name or password"}
+	}
+
+	master, masterErr := wallet.NewMasterKey(seed)
+	for i := range seed {
+		seed[i] = 0
+	}
+	if masterErr != nil {
+		return nil, &Error{Code: CodeInternalError, Message: fmt.Sprintf("derive master key: %v", masterErr)}
+	}
+
+	hdKey, derErr := master.DeriveAddress(params.Account, wallet.ChangeExternal, params.Index)
+	if derErr != nil {
+		return nil, &Error{Code: CodeInternalError, Message: fmt.Sprintf("derive key: %v", derErr)}
+	}
+
+	pubBytes := hdKey.PublicKeyBytes()
+	addr := hdKey.Address()
+
+	return &WalletGetPubKeyResult{
+		PubKey:  hex.EncodeToString(pubBytes),
+		Address: addr.String(),
+	}, nil
+}
+
 func (s *Server) handleWalletStake(req *Request) (interface{}, *Error) {
 	if err := s.requireWallet(); err != nil {
 		return nil, err

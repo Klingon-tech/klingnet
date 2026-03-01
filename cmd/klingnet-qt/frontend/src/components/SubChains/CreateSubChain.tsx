@@ -13,7 +13,7 @@ import { DetailRow } from '@/components/ui/DetailRow';
 import CopyButton from '../ui/CopyButton';
 
 export default function CreateSubChain() {
-  const { walletName, unlocked, password, refreshAccounts } = useWallet();
+  const { walletName, unlocked, password, accounts, refreshAccounts } = useWallet();
   const [chainName, setChainName] = useState('');
   const [symbol, setSymbol] = useState('');
   const [consensusType, setConsensusType] = useState('poa');
@@ -28,8 +28,38 @@ export default function CreateSubChain() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ tx_hash: string; chain_id: string } | null>(null);
+  const [showPicker, setShowPicker] = useState(false);
+  const [pickerLoading, setPickerLoading] = useState<number | null>(null);
 
   const displaySymbol = symbol || '???';
+
+  // Only show external accounts (change=0) in the picker.
+  const externalAccounts = accounts.filter(a => a.change === 0);
+
+  const addValidatorFromAccount = async (accountIndex: number) => {
+    setPickerLoading(accountIndex);
+    setError(null);
+    try {
+      const mod = await import('../../../wailsjs/go/main/WalletService');
+      const res = await mod.GetPubKey(walletName, password, 0, accountIndex);
+      const pubkey = res.pubkey;
+
+      // Check for duplicates.
+      const existing = validators.split('\n').map(v => v.trim()).filter(v => v.length > 0);
+      if (existing.includes(pubkey)) {
+        setError('This account is already added as a validator');
+        return;
+      }
+
+      // Append to textarea.
+      const newVal = existing.length > 0 ? validators.trimEnd() + '\n' + pubkey : pubkey;
+      setValidators(newVal);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPickerLoading(null);
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -87,6 +117,7 @@ export default function CreateSubChain() {
     setError(null);
     setResult(null);
     setShowConfirm(false);
+    setShowPicker(false);
   };
 
   return (
@@ -186,6 +217,41 @@ export default function CreateSubChain() {
                         rows={4}
                         className="font-mono"
                       />
+                      {externalAccounts.length > 0 && (
+                        <div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setShowPicker(!showPicker)}
+                          >
+                            {showPicker ? 'Hide Wallet Accounts' : 'Add from Wallet'}
+                          </Button>
+                          {showPicker && (
+                            <div className="mt-2 border rounded-md p-3 space-y-1 max-h-48 overflow-y-auto">
+                              {externalAccounts.map((acc) => (
+                                <div
+                                  key={acc.index}
+                                  className="flex items-center justify-between py-1 text-sm"
+                                >
+                                  <span className="font-mono text-muted-foreground truncate mr-2">
+                                    #{acc.index} {acc.name || acc.address}
+                                  </span>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    disabled={pickerLoading !== null}
+                                    onClick={() => addValidatorFromAccount(acc.index)}
+                                  >
+                                    {pickerLoading === acc.index ? 'Loading...' : 'Add'}
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
 
