@@ -7,6 +7,7 @@ import (
 
 	"github.com/Klingon-tech/klingnet-chain/config"
 	"github.com/Klingon-tech/klingnet-chain/internal/storage"
+	"github.com/Klingon-tech/klingnet-chain/pkg/tx"
 	"github.com/Klingon-tech/klingnet-chain/pkg/types"
 )
 
@@ -141,28 +142,24 @@ func (m *Manager) SetStopHandler(h func(types.ChainID)) {
 // It parses, validates, registers, and spawns the sub-chain.
 // The value parameter is the output's KGX value (burn amount).
 func (m *Manager) HandleRegistration(txHash types.Hash, outputIndex uint32, value uint64, scriptData []byte, height uint64) error {
-	// Enforce minimum deposit (burn amount).
-	if m.rules.MinDeposit > 0 && value < m.rules.MinDeposit {
-		return fmt.Errorf("registration burn %d < min deposit %d", value, m.rules.MinDeposit)
-	}
-
-	// Parse registration data.
-	rd, err := ParseRegistrationData(scriptData)
-	if err != nil {
-		return fmt.Errorf("parse registration: %w", err)
-	}
-
-	// Validate against protocol rules.
-	if err := ValidateRegistrationData(rd, m.rules); err != nil {
-		return fmt.Errorf("invalid registration: %w", err)
-	}
-
-	// Check max sub-chains limit.
 	m.mu.RLock()
 	count := m.registry.Count()
 	m.mu.RUnlock()
-	if m.rules.MaxPerParent > 0 && count >= m.rules.MaxPerParent {
-		return fmt.Errorf("max sub-chains reached (%d)", m.rules.MaxPerParent)
+	output := tx.Output{
+		Value: value,
+		Script: types.Script{
+			Type: types.ScriptTypeRegister,
+			Data: scriptData,
+		},
+	}
+	if err := ValidateRegistrationTx(output, m.rules, uint64(count), 0); err != nil {
+		return err
+	}
+
+	// Parse registration data after validation succeeds so we can persist it.
+	rd, err := ParseRegistrationData(scriptData)
+	if err != nil {
+		return fmt.Errorf("parse registration: %w", err)
 	}
 
 	// Derive chain ID.

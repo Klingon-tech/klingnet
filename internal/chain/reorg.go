@@ -226,6 +226,13 @@ func (c *Chain) Reorg(newTipHash types.Hash) error {
 			return fmt.Errorf("supply underflow at height %d: reward %d > supply %d", h, undo.BlockReward, c.state.Supply)
 		}
 		c.state.Supply -= undo.BlockReward
+		if err := c.removeRegisteredSubChains(countRegisterOutputs(blk)); err != nil {
+			return fmt.Errorf("registration count revert at height %d: %w", h, err)
+		}
+		if blk.Header.Difficulty > c.state.CumulativeDifficulty {
+			return fmt.Errorf("cumulative difficulty underflow at height %d: difficulty %d > cumdiff %d",
+				h, blk.Header.Difficulty, c.state.CumulativeDifficulty)
+		}
 		c.state.CumulativeDifficulty -= blk.Header.Difficulty
 
 		if err := c.blocks.DeleteUndo(bHash); err != nil {
@@ -245,34 +252,46 @@ func (c *Chain) Reorg(newTipHash types.Hash) error {
 			return fmt.Errorf("difficulty check replay block at height %d: %w", blk.Header.Height, err)
 		}
 
+		if err := c.checkSigningLimit(blk); err != nil {
+			return fmt.Errorf("signing limit replay block at height %d: %w", blk.Header.Height, err)
+		}
+
 		// Validate UTXO-dependent rules (tx signatures, maturity, tokens, stakes).
-		if err := c.validateBlockState(blk); err != nil {
+		registeredSubChains, err := c.validateBlockState(blk)
+		if err != nil {
 			return fmt.Errorf("state validation replay block at height %d: %w", blk.Header.Height, err)
 		}
 
 		blockReward := c.computeBlockReward(blk)
+		effectiveReward := blockReward
+		if c.maxSupply > 0 {
+			if c.state.Supply >= c.maxSupply {
+				effectiveReward = 0
+			} else if remaining := c.maxSupply - c.state.Supply; effectiveReward > remaining {
+				effectiveReward = remaining
+			}
+		}
+		if c.state.Supply > ^uint64(0)-effectiveReward {
+			return fmt.Errorf("supply overflow at height %d: supply %d + reward %d", blk.Header.Height, c.state.Supply, effectiveReward)
+		}
+		if c.state.CumulativeDifficulty > ^uint64(0)-blk.Header.Difficulty {
+			return fmt.Errorf("cumulative difficulty overflow at height %d: cumdiff %d + difficulty %d",
+				blk.Header.Height, c.state.CumulativeDifficulty, blk.Header.Difficulty)
+		}
+
+		newSupply := c.state.Supply + effectiveReward
+		newCumDiff := c.state.CumulativeDifficulty + blk.Header.Difficulty
 
 		undo, err := c.applyBlockWithUndo(blk)
 		if err != nil {
 			return fmt.Errorf("apply new block at height %d: %w", blk.Header.Height, err)
 		}
-		undo.BlockReward = blockReward
+		undo.BlockReward = effectiveReward
 
 		undoBytes, err := json.Marshal(undo)
 		if err != nil {
 			return fmt.Errorf("marshal undo: %w", err)
 		}
-
-		// Cap block reward to respect max supply and prevent overflow.
-		if c.maxSupply > 0 && c.state.Supply+blockReward > c.maxSupply {
-			blockReward = c.maxSupply - c.state.Supply
-		}
-		if c.state.Supply > ^uint64(0)-blockReward {
-			return fmt.Errorf("supply overflow at height %d: supply %d + reward %d", blk.Header.Height, c.state.Supply, blockReward)
-		}
-
-		newSupply := c.state.Supply + blockReward
-		newCumDiff := c.state.CumulativeDifficulty + blk.Header.Difficulty
 
 		// Atomically persist block, indexes, undo, and chain state.
 		if err := c.blocks.CommitBlock(blk, undoBytes, newSupply, newCumDiff); err != nil {
@@ -281,6 +300,9 @@ func (c *Chain) Reorg(newTipHash types.Hash) error {
 
 		c.state.Supply = newSupply
 		c.state.CumulativeDifficulty = newCumDiff
+		if err := c.addRegisteredSubChains(registeredSubChains); err != nil {
+			return fmt.Errorf("registration count replay block at height %d: %w", blk.Header.Height, err)
+		}
 
 		// Fire registration handler for any registrations in the new branch.
 		if c.registrationHandler != nil {
@@ -455,6 +477,7 @@ func (c *Chain) rebuildReorg(newBranch []*block.Block, forkHeight uint64) error 
 	// and storing undo data for future reorgs.
 	var supply uint64
 	var cumDiff uint64
+	c.registeredSubChains = 0
 	for h := uint64(0); h <= newTip.Header.Height; h++ {
 		blk, err := c.blocks.GetBlockByHeight(h)
 		if err != nil {
@@ -469,7 +492,10 @@ func (c *Chain) rebuildReorg(newBranch []*block.Block, forkHeight uint64) error 
 			if err := c.verifyDifficulty(blk); err != nil {
 				return fmt.Errorf("rebuild reorg: difficulty check at height %d: %w", h, err)
 			}
-			if err := c.validateBlockState(blk); err != nil {
+			if err := c.checkSigningLimit(blk); err != nil {
+				return fmt.Errorf("rebuild reorg: signing limit at height %d: %w", h, err)
+			}
+			if _, err := c.validateBlockState(blk); err != nil {
 				return fmt.Errorf("rebuild reorg: state validation at height %d: %w", h, err)
 			}
 		}
@@ -490,11 +516,25 @@ func (c *Chain) rebuildReorg(newBranch []*block.Block, forkHeight uint64) error 
 			return fmt.Errorf("rebuild reorg: store undo at height %d: %w", h, err)
 		}
 
-		if c.maxSupply > 0 && supply+blockReward > c.maxSupply {
-			blockReward = c.maxSupply - supply
+		if c.maxSupply > 0 {
+			if supply >= c.maxSupply {
+				blockReward = 0
+			} else if remaining := c.maxSupply - supply; blockReward > remaining {
+				blockReward = remaining
+			}
+		}
+		if blockReward > ^uint64(0)-supply {
+			return fmt.Errorf("rebuild reorg: supply overflow at height %d: supply %d + reward %d", h, supply, blockReward)
+		}
+		if blk.Header.Difficulty > ^uint64(0)-cumDiff {
+			return fmt.Errorf("rebuild reorg: cumulative difficulty overflow at height %d: cumdiff %d + difficulty %d",
+				h, cumDiff, blk.Header.Difficulty)
 		}
 		supply += blockReward
 		cumDiff += blk.Header.Difficulty
+		if err := c.addRegisteredSubChains(countRegisterOutputs(blk)); err != nil {
+			return fmt.Errorf("rebuild reorg: registration count at height %d: %w", h, err)
+		}
 
 		// Fire registration/stake handlers for new-branch blocks only.
 		if h > forkHeight {

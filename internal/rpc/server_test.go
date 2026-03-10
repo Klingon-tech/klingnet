@@ -71,6 +71,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 				MinFeeRate:  10,
 			},
 			SubChain: config.SubChainRules{
+				Enabled:        true,
 				MaxDepth:       5,
 				MaxPerParent:   10,
 				AnchorInterval: 10,

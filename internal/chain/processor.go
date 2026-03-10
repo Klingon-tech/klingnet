@@ -30,6 +30,7 @@ var (
 	ErrInvalidStakeAmount     = errors.New("invalid stake amount")
 	ErrBadCoinbaseTx          = errors.New("invalid coinbase transaction")
 	ErrCoinbaseRewardExceeded = errors.New("coinbase reward exceeds consensus limit")
+	ErrMintingDisabled        = errors.New("token minting is disabled")
 	ErrSigningLimitExceeded   = errors.New("validator exceeded signing limit")
 )
 
@@ -77,12 +78,6 @@ func (c *Chain) ProcessBlock(blk *block.Block) error {
 		return fmt.Errorf("validate: %w", err)
 	}
 
-	// Note: Signing limit is NOT checked here on the fast path.
-	// Blocks received from peers during sync were already accepted by the network.
-	// The signing limit is enforced in:
-	//   - Miner pre-check (IsSigningLimitReached) — prevents local violations
-	//   - Reorg replay — prevents rogue validators from forcing reorgs
-
 	// Block timestamp bounds: reject blocks too far in the future.
 	maxTime := uint64(time.Now().Add(2 * time.Minute).Unix())
 	if blk.Header.Timestamp > maxTime {
@@ -95,6 +90,12 @@ func (c *Chain) ProcessBlock(blk *block.Block) error {
 		if err == nil && blk.Header.Timestamp < parentBlk.Header.Timestamp {
 			return fmt.Errorf("%w: block timestamp %d < parent timestamp %d",
 				ErrTimestampBeforeParent, blk.Header.Timestamp, parentBlk.Header.Timestamp)
+		}
+	}
+
+	if !errors.Is(parentErr, ErrForkDetected) {
+		if err := c.checkSigningLimit(blk); err != nil {
+			return err
 		}
 	}
 
@@ -124,7 +125,8 @@ func (c *Chain) ProcessBlock(blk *block.Block) error {
 	// Fast path: block extends current tip.
 
 	// Validate UTXO-dependent rules (signatures, maturity, tokens, stakes).
-	if err := c.validateBlockState(blk); err != nil {
+	registeredSubChains, err := c.validateBlockState(blk)
+	if err != nil {
 		return err
 	}
 
@@ -132,25 +134,40 @@ func (c *Chain) ProcessBlock(blk *block.Block) error {
 	// still in the UTXO set. reward = coinbase_value - total_fees.
 	blockReward := c.computeBlockReward(blk)
 
+	// Cap block reward to respect max supply.
+	effectiveReward := blockReward
+	if c.maxSupply > 0 {
+		if c.state.Supply >= c.maxSupply {
+			effectiveReward = 0
+		} else if remaining := c.maxSupply - c.state.Supply; effectiveReward > remaining {
+			effectiveReward = remaining
+		}
+	}
+
+	// Guard supply/cumulative-difficulty arithmetic before mutating UTXOs.
+	if effectiveReward > ^uint64(0)-c.state.Supply {
+		return fmt.Errorf("supply overflow at height %d: supply %d + reward %d",
+			blk.Header.Height, c.state.Supply, effectiveReward)
+	}
+	if blk.Header.Difficulty > ^uint64(0)-c.state.CumulativeDifficulty {
+		return fmt.Errorf("cumulative difficulty overflow at height %d: cumdiff %d + difficulty %d",
+			blk.Header.Height, c.state.CumulativeDifficulty, blk.Header.Difficulty)
+	}
+
+	newSupply := c.state.Supply + effectiveReward
+	newCumDiff := c.state.CumulativeDifficulty + blk.Header.Difficulty
+
 	// Apply UTXO changes and collect undo data.
 	undo, err := c.applyBlockWithUndo(blk)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrApplyUTXO, err)
 	}
-	undo.BlockReward = blockReward
+	undo.BlockReward = effectiveReward
 
 	undoBytes, err := json.Marshal(undo)
 	if err != nil {
 		return fmt.Errorf("marshal undo: %w", err)
 	}
-
-	// Cap block reward to respect max supply.
-	if c.maxSupply > 0 && c.state.Supply+blockReward > c.maxSupply {
-		blockReward = c.maxSupply - c.state.Supply
-	}
-
-	newSupply := c.state.Supply + blockReward
-	newCumDiff := c.state.CumulativeDifficulty + blk.Header.Difficulty
 
 	// Atomically persist block data, indexes, undo, tip, and cumulative
 	// difficulty in a single batch. Prevents index corruption on crash.
@@ -164,6 +181,9 @@ func (c *Chain) ProcessBlock(blk *block.Block) error {
 	c.state.TipHash = hash
 	c.state.Height = blk.Header.Height
 	c.state.TipTimestamp = blk.Header.Timestamp
+	if err := c.addRegisteredSubChains(registeredSubChains); err != nil {
+		return err
+	}
 
 	// Scan for sub-chain registration outputs.
 	if c.registrationHandler != nil {
@@ -204,23 +224,23 @@ func (c *Chain) ProcessBlock(blk *block.Block) error {
 // validateBlockState checks UTXO-dependent rules: transaction signatures,
 // coinbase maturity, token conservation, and stake amounts.
 // Used by both the fast path and reorg replay to ensure consistent validation.
-func (c *Chain) validateBlockState(blk *block.Block) error {
+func (c *Chain) validateBlockState(blk *block.Block) (uint64, error) {
 	coinbaseTx := blk.Transactions[0]
 
 	// Coinbase must be a dedicated transaction:
 	// exactly one input and that input must be the zero outpoint marker.
 	if len(coinbaseTx.Inputs) != 1 || !coinbaseTx.Inputs[0].PrevOut.IsZero() {
-		return ErrBadCoinbaseTx
+		return 0, ErrBadCoinbaseTx
 	}
 
 	// Reject coinbase with token outputs — tokens must go through normal
 	// transactions so that mint fee and conservation rules are enforced.
 	for i, out := range coinbaseTx.Outputs {
-		if out.Token != nil {
-			return fmt.Errorf("coinbase output %d: must not contain token data", i)
-		}
 		if out.Script.Type == types.ScriptTypeMint {
-			return fmt.Errorf("coinbase output %d: must not use mint script type", i)
+			return 0, fmt.Errorf("coinbase output %d: must not use mint script type", i)
+		}
+		if out.Token != nil {
+			return 0, fmt.Errorf("coinbase output %d: must not contain token data", i)
 		}
 	}
 
@@ -235,10 +255,10 @@ func (c *Chain) validateBlockState(blk *block.Block) error {
 		}
 		fee, err := transaction.ValidateWithUTXOs(utxoProvider)
 		if err != nil {
-			return fmt.Errorf("tx %d validation: %w", i, err)
+			return 0, fmt.Errorf("tx %d validation: %w", i, err)
 		}
 		if totalFees > math.MaxUint64-fee {
-			return fmt.Errorf("tx %d fee overflow", i)
+			return 0, fmt.Errorf("tx %d fee overflow", i)
 		}
 		fees[i] = fee
 		totalFees += fee
@@ -248,13 +268,13 @@ func (c *Chain) validateBlockState(blk *block.Block) error {
 	// minted = coinbase_total - total_fees (fees are recycled, not newly minted).
 	coinbaseTotal, err := coinbaseTx.TotalOutputValue()
 	if err != nil {
-		return fmt.Errorf("coinbase output overflow: %w", err)
+		return 0, fmt.Errorf("coinbase output overflow: %w", err)
 	}
 	var minted uint64
 	if coinbaseTotal > totalFees {
 		minted = coinbaseTotal - totalFees
 	}
-	allowedMint := c.blockReward
+	allowedMint := c.blockSubsidy(blk.Header.Height)
 	if c.maxSupply > 0 {
 		if c.state.Supply >= c.maxSupply {
 			allowedMint = 0
@@ -263,33 +283,37 @@ func (c *Chain) validateBlockState(blk *block.Block) error {
 		}
 	}
 	if minted > allowedMint {
-		return fmt.Errorf("%w: minted=%d allowed=%d", ErrCoinbaseRewardExceeded, minted, allowedMint)
+		return 0, fmt.Errorf("%w: minted=%d allowed=%d", ErrCoinbaseRewardExceeded, minted, allowedMint)
 	}
 
 	// Defensive rule: only transaction 0 may carry a coinbase marker input.
 	for i, transaction := range blk.Transactions[1:] {
 		for _, in := range transaction.Inputs {
 			if in.PrevOut.IsZero() {
-				return fmt.Errorf("%w: tx %d contains coinbase input", ErrBadCoinbaseTx, i+1)
+				return 0, fmt.Errorf("%w: tx %d contains coinbase input", ErrBadCoinbaseTx, i+1)
 			}
 		}
 	}
 
 	// Coinbase maturity: reject blocks that spend immature coinbase outputs.
 	if err := c.checkCoinbaseMaturity(blk); err != nil {
-		return err
+		return 0, err
 	}
 
 	// Token validation: verify token conservation, minting, and burning rules.
 	tokenInputs := &token.UTXOTokenAdapter{Set: c.utxos}
 	for i, transaction := range blk.Transactions[1:] {
-		if err := token.ValidateTokens(transaction, tokenInputs); err != nil {
-			return fmt.Errorf("token validation: %w", err)
+		hasMint := token.HasMintOutput(transaction)
+		if hasMint && !c.allowMinting {
+			return 0, ErrMintingDisabled
 		}
-		if config.TokenCreationFee > 0 && token.HasMintOutput(transaction) {
+		if err := token.ValidateTokens(transaction, tokenInputs); err != nil {
+			return 0, fmt.Errorf("token validation: %w", err)
+		}
+		if config.TokenCreationFee > 0 && hasMint {
 			txFee := fees[i+1]
 			if err := token.ValidateMintFee(transaction, txFee, config.TokenCreationFee); err != nil {
-				return fmt.Errorf("token creation fee: %w", err)
+				return 0, fmt.Errorf("token creation fee: %w", err)
 			}
 		}
 	}
@@ -299,13 +323,18 @@ func (c *Chain) validateBlockState(blk *block.Block) error {
 		for _, transaction := range blk.Transactions[1:] {
 			for _, out := range transaction.Outputs {
 				if out.Script.Type == types.ScriptTypeStake && out.Value != c.validatorStake {
-					return fmt.Errorf("%w: must be exactly %d, got %d", ErrInvalidStakeAmount, c.validatorStake, out.Value)
+					return 0, fmt.Errorf("%w: must be exactly %d, got %d", ErrInvalidStakeAmount, c.validatorStake, out.Value)
 				}
 			}
 		}
 	}
 
-	return nil
+	registeredSubChains, err := c.validateRegistrations(blk)
+	if err != nil {
+		return 0, err
+	}
+
+	return registeredSubChains, nil
 }
 
 // checkParentLink verifies that the block's PrevHash and Height are consistent
@@ -506,6 +535,63 @@ func (c *Chain) checkCoinbaseMaturity(blk *block.Block) error {
 			}
 		}
 	}
+	return nil
+}
+
+func (c *Chain) validateRegistrations(blk *block.Block) (uint64, error) {
+	var registrationsInBlock uint64
+
+	for txIndex, transaction := range blk.Transactions {
+		for outIndex, out := range transaction.Outputs {
+			if out.Script.Type != types.ScriptTypeRegister {
+				continue
+			}
+			if c.registrationValidator != nil {
+				if err := c.registrationValidator(out, c.registeredSubChains, registrationsInBlock); err != nil {
+					return 0, fmt.Errorf("tx %d output %d registration: %w", txIndex, outIndex, err)
+				}
+			}
+			if registrationsInBlock == math.MaxUint64 {
+				return 0, fmt.Errorf("registration count overflow")
+			}
+			registrationsInBlock++
+		}
+	}
+
+	return registrationsInBlock, nil
+}
+
+func countRegisterOutputs(blk *block.Block) uint64 {
+	var count uint64
+	for _, transaction := range blk.Transactions {
+		for _, out := range transaction.Outputs {
+			if out.Script.Type == types.ScriptTypeRegister {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func (c *Chain) addRegisteredSubChains(count uint64) error {
+	if count == 0 {
+		return nil
+	}
+	if c.registeredSubChains > math.MaxUint64-count {
+		return fmt.Errorf("registered sub-chain overflow: have %d add %d", c.registeredSubChains, count)
+	}
+	c.registeredSubChains += count
+	return nil
+}
+
+func (c *Chain) removeRegisteredSubChains(count uint64) error {
+	if count == 0 {
+		return nil
+	}
+	if count > c.registeredSubChains {
+		return fmt.Errorf("registered sub-chain underflow: have %d remove %d", c.registeredSubChains, count)
+	}
+	c.registeredSubChains -= count
 	return nil
 }
 

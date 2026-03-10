@@ -464,6 +464,45 @@ func TestValidateTokens_OverflowProtection(t *testing.T) {
 	}
 }
 
+func TestValidateTokens_OutputBurnOverflowProtection(t *testing.T) {
+	tokenID := types.TokenID{0xbb}
+	prevOut := types.Outpoint{TxID: types.Hash{0x03}, Index: 0}
+
+	inputs := newMockInputTokens()
+
+	var transferTotal uint64
+	var outputs []tx.Output
+	for i := 0; i < 1000; i++ {
+		outputs = append(outputs, tx.Output{
+			Script: types.Script{Type: types.ScriptTypeP2PKH, Data: make([]byte, types.AddressSize)},
+			Token:  &types.TokenData{ID: tokenID, Amount: config.MaxTokenAmount},
+		})
+		transferTotal += config.MaxTokenAmount
+	}
+	for i := 0; i < 1000; i++ {
+		outputs = append(outputs, tx.Output{
+			Script: types.Script{Type: types.ScriptTypeBurn},
+			Token:  &types.TokenData{ID: tokenID, Amount: config.MaxTokenAmount},
+		})
+	}
+	wrapped := transferTotal + transferTotal
+	inputs.add(prevOut, &types.TokenData{ID: tokenID, Amount: wrapped})
+
+	transaction := &tx.Transaction{
+		Version: 1,
+		Inputs:  []tx.Input{{PrevOut: prevOut}},
+		Outputs: outputs,
+	}
+
+	err := ValidateTokens(transaction, inputs)
+	if err == nil {
+		t.Fatal("expected output+burn overflow error, got nil")
+	}
+	if !strings.Contains(err.Error(), "overflow") {
+		t.Errorf("expected overflow error, got: %v", err)
+	}
+}
+
 func TestStore_Has(t *testing.T) {
 	db := storage.NewMemory()
 	store := NewStore(db)

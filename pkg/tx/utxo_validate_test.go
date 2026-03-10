@@ -192,6 +192,56 @@ func TestValidateWithUTXOs_MultipleInputs(t *testing.T) {
 	}
 }
 
+func TestValidateWithUTXOs_MintSpend(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+	addr := addressFromKey(key)
+
+	prevOut := types.Outpoint{TxID: types.Hash{0x03}, Index: 0}
+	provider := newMockProvider()
+	provider.add(prevOut, 0, types.Script{
+		Type: types.ScriptTypeMint,
+		Data: append(addr[:], []byte("meta")...),
+	})
+
+	b := NewBuilder().
+		AddInput(prevOut).
+		AddTokenOutput(0, types.Script{Type: types.ScriptTypeP2PKH, Data: addr[:]}, types.TokenData{ID: types.TokenID{0x01}, Amount: 1})
+	b.Sign(key)
+	transaction := b.Build()
+
+	fee, err := transaction.ValidateWithUTXOs(provider)
+	if err != nil {
+		t.Fatalf("ValidateWithUTXOs: %v", err)
+	}
+	if fee != 0 {
+		t.Errorf("fee = %d, want 0", fee)
+	}
+}
+
+func TestValidateWithUTXOs_MintSpend_WrongKey(t *testing.T) {
+	key1, _ := crypto.GenerateKey()
+	key2, _ := crypto.GenerateKey()
+	addr1 := addressFromKey(key1)
+
+	prevOut := types.Outpoint{TxID: types.Hash{0x04}, Index: 0}
+	provider := newMockProvider()
+	provider.add(prevOut, 0, types.Script{
+		Type: types.ScriptTypeMint,
+		Data: append(addr1[:], []byte("meta")...),
+	})
+
+	b := NewBuilder().
+		AddInput(prevOut).
+		AddTokenOutput(0, types.Script{Type: types.ScriptTypeP2PKH, Data: addr1[:]}, types.TokenData{ID: types.TokenID{0x02}, Amount: 1})
+	b.Sign(key2)
+	transaction := b.Build()
+
+	_, err := transaction.ValidateWithUTXOs(provider)
+	if !errors.Is(err, ErrScriptMismatch) {
+		t.Errorf("expected ErrScriptMismatch, got: %v", err)
+	}
+}
+
 func TestValidateWithUTXOs_InvalidSignature(t *testing.T) {
 	key1, _ := crypto.GenerateKey()
 	key2, _ := crypto.GenerateKey()
@@ -312,5 +362,27 @@ func TestValidateWithUTXOs_StakeSpend_WrongKey(t *testing.T) {
 	_, err := transaction.ValidateWithUTXOs(provider)
 	if !errors.Is(err, ErrScriptMismatch) {
 		t.Errorf("expected ErrScriptMismatch, got: %v", err)
+	}
+}
+
+func TestValidateWithUTXOs_UnsupportedScript(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+
+	prevOut := types.Outpoint{TxID: types.Hash{0x05}, Index: 0}
+	provider := newMockProvider()
+	provider.add(prevOut, 5000, types.Script{
+		Type: types.ScriptTypeP2SH,
+		Data: []byte{0x01},
+	})
+
+	b := NewBuilder().
+		AddInput(prevOut).
+		AddOutput(4000, types.Script{Type: types.ScriptTypeP2PKH, Data: make([]byte, 20)})
+	b.Sign(key)
+	transaction := b.Build()
+
+	_, err := transaction.ValidateWithUTXOs(provider)
+	if !errors.Is(err, ErrUnsupportedScript) {
+		t.Errorf("expected ErrUnsupportedScript, got: %v", err)
 	}
 }

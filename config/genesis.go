@@ -342,6 +342,9 @@ func (g *Genesis) Validate() error {
 		if _, err := types.ParseAddress(addrStr); err != nil {
 			return fmt.Errorf("invalid alloc address %q: %w", addrStr, err)
 		}
+		if totalAlloc > math.MaxUint64-v {
+			return fmt.Errorf("genesis allocations overflow uint64")
+		}
 		totalAlloc += v
 	}
 	if g.Protocol.Consensus.MaxSupply > 0 && totalAlloc > g.Protocol.Consensus.MaxSupply {

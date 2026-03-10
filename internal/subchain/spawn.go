@@ -68,6 +68,8 @@ func Spawn(cfg SpawnConfig) (*SpawnResult, error) {
 		return nil, fmt.Errorf("create chain: %w", err)
 	}
 	ch.SetConsensusRules(gen.Protocol.Consensus)
+	ch.SetTokenRules(gen.Protocol.Token)
+	ch.SetRegistrationValidator(NewRegistrationValidator(&gen.Protocol.SubChain))
 
 	// Initialize from genesis if this is a fresh chain.
 	state := ch.State()
@@ -82,6 +84,7 @@ func Spawn(cfg SpawnConfig) (*SpawnResult, error) {
 	pool := mempool.New(adapter, 0)
 	pool.SetMinFeeRate(cfg.Registration.MinFeeRate)
 	pool.SetCoinbaseMaturity(config.CoinbaseMaturity, ch.Height, utxoStore)
+	pool.SetMintingAllowed(gen.Protocol.Token.AllowMinting)
 	if cfg.Registration.ValidatorStake > 0 {
 		pool.SetStakeAmount(cfg.Registration.ValidatorStake)
 	}

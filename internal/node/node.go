@@ -172,6 +172,8 @@ func New(cfg *config.Config) (*Node, error) {
 		return nil, fmt.Errorf("create chain: %w", err)
 	}
 	ch.SetConsensusRules(genesis.Protocol.Consensus)
+	ch.SetTokenRules(genesis.Protocol.Token)
+	ch.SetRegistrationValidator(subchain.NewRegistrationValidator(&genesis.Protocol.SubChain))
 
 	state := ch.State()
 	if state.IsGenesis() {
@@ -210,6 +212,7 @@ func New(cfg *config.Config) (*Node, error) {
 	pool.SetMinFeeRate(genesis.Protocol.Consensus.MinFeeRate)
 	pool.SetCoinbaseMaturity(config.CoinbaseMaturity, ch.Height, utxoStore)
 	pool.SetTokenValidator(&token.UTXOTokenAdapter{Set: utxoStore})
+	pool.SetMintingAllowed(genesis.Protocol.Token.AllowMinting)
 	pool.SetMintFee(config.TokenCreationFee)
 	pool.SetStakeAmount(genesis.Protocol.Consensus.ValidatorStake)
 
@@ -558,6 +561,7 @@ func (n *Node) Start() error {
 			n.genesis.Protocol.Consensus.BlockReward,
 			n.genesis.Protocol.Consensus.MaxSupply,
 			n.ch.Supply)
+		m.SetHalvingInterval(n.genesis.Protocol.Consensus.HalvingInterval)
 		blockTime := time.Duration(n.genesis.Protocol.Consensus.BlockTime) * time.Second
 
 		n.logger.Info().
@@ -1929,6 +1933,7 @@ func (n *Node) startSubChainMiner(chainID types.ChainID,
 		sr.Genesis.Protocol.Consensus.BlockReward,
 		sr.Genesis.Protocol.Consensus.MaxSupply,
 		sr.Chain.Supply)
+	m.SetHalvingInterval(sr.Genesis.Protocol.Consensus.HalvingInterval)
 
 	idHex := hex.EncodeToString(chainID[:])
 	blockTime := time.Duration(sr.Genesis.Protocol.Consensus.BlockTime) * time.Second
@@ -1964,6 +1969,7 @@ func (n *Node) startSubChainPoAMiner(chainID types.ChainID,
 		sr.Genesis.Protocol.Consensus.BlockReward,
 		sr.Genesis.Protocol.Consensus.MaxSupply,
 		sr.Chain.Supply)
+	m.SetHalvingInterval(sr.Genesis.Protocol.Consensus.HalvingInterval)
 
 	idHex := hex.EncodeToString(chainID[:])
 	blockTime := time.Duration(sr.Genesis.Protocol.Consensus.BlockTime) * time.Second

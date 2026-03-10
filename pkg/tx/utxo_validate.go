@@ -17,6 +17,7 @@ var (
 	ErrInsufficientFee   = errors.New("insufficient fee")
 	ErrInputOverflow     = errors.New("input values overflow")
 	ErrScriptMismatch    = errors.New("pubkey does not match UTXO script")
+	ErrUnsupportedScript = errors.New("unsupported spend script")
 	ErrUnspendableOutput = errors.New("output is unspendable")
 )
 
@@ -53,27 +54,27 @@ func (tx *Transaction) ValidateWithUTXOs(provider UTXOProvider) (uint64, error) 
 			return 0, fmt.Errorf("input %d: %w", i, err)
 		}
 
-		// Reject spending unspendable outputs (register, anchor, burn).
-		if script.Type == types.ScriptTypeRegister || script.Type == types.ScriptTypeAnchor || script.Type == types.ScriptTypeBurn {
+		switch script.Type {
+		case types.ScriptTypeRegister, types.ScriptTypeAnchor, types.ScriptTypeBurn:
 			return 0, fmt.Errorf("input %d (%s): %w: %s output cannot be spent",
 				i, in.PrevOut, ErrUnspendableOutput, script.Type)
-		}
-
-		// Verify the pubkey matches the UTXO script for P2PKH.
-		if script.Type == types.ScriptTypeP2PKH {
+		case types.ScriptTypeP2PKH:
 			if err := verifyP2PKH(in.PubKey, script.Data); err != nil {
 				return 0, fmt.Errorf("input %d: %w", i, err)
 			}
-		}
-
-		// Verify the pubkey matches the stake's pubkey for ScriptTypeStake.
-		if script.Type == types.ScriptTypeStake {
+		case types.ScriptTypeMint:
+			if err := verifyAddressLock(in.PubKey, script.Data); err != nil {
+				return 0, fmt.Errorf("input %d: %w", i, err)
+			}
+		case types.ScriptTypeStake:
 			if len(script.Data) != 33 {
 				return 0, fmt.Errorf("input %d: %w: stake script data length %d, want 33", i, ErrScriptMismatch, len(script.Data))
 			}
 			if !bytes.Equal(in.PubKey, script.Data) {
 				return 0, fmt.Errorf("input %d: %w: pubkey does not match stake", i, ErrScriptMismatch)
 			}
+		default:
+			return 0, fmt.Errorf("input %d (%s): %w: %s", i, in.PrevOut, ErrUnsupportedScript, script.Type)
 		}
 
 		if totalInput > math.MaxUint64-value {
@@ -125,4 +126,11 @@ func verifyP2PKH(pubKey []byte, scriptData []byte) error {
 		return fmt.Errorf("%w: expected %s, got %s", ErrScriptMismatch, expected, derived)
 	}
 	return nil
+}
+
+func verifyAddressLock(pubKey []byte, scriptData []byte) error {
+	if len(scriptData) < types.AddressSize {
+		return fmt.Errorf("%w: script data length %d", ErrScriptMismatch, len(scriptData))
+	}
+	return verifyP2PKH(pubKey, scriptData[:types.AddressSize])
 }

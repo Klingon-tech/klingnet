@@ -131,6 +131,9 @@ func ValidateTokens(transaction *tx.Transaction, inputs InputTokens) error {
 		}
 
 		inAmount := inputTotals[id]
+		if outputTotals[id] > math.MaxUint64-burnedAmounts[id] {
+			return fmt.Errorf("token %s: output+burn amount overflow", id)
+		}
 		outAmount := outputTotals[id] + burnedAmounts[id]
 
 		if inAmount != outAmount {

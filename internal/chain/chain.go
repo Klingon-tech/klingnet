@@ -16,8 +16,15 @@ import (
 )
 
 // RegistrationHandler is called when a ScriptTypeRegister output is found in a confirmed block.
-// The value parameter is the output's KGX value (burn amount) so the handler can enforce MinDeposit.
+// The value parameter is the output's KGX value (burn amount).
 type RegistrationHandler func(txHash types.Hash, outputIndex uint32, value uint64, scriptData []byte, height uint64)
+
+// RegistrationValidator is called during block validation for each
+// ScriptTypeRegister output before the block is committed.
+// existingRegistrations is the active-chain count before this block.
+// pendingRegistrations is the number of earlier register outputs already
+// validated in the same block.
+type RegistrationValidator func(output tx.Output, existingRegistrations, pendingRegistrations uint64) error
 
 // DeregistrationHandler is called when a ScriptTypeRegister output is reverted during a reorg.
 type DeregistrationHandler func(txHash types.Hash, outputIndex uint32)
@@ -46,11 +53,15 @@ type Chain struct {
 	engine    consensus.Engine
 	validator *consensus.Validator
 
-	maxSupply      uint64     // Max coin supply (0 = unlimited).
-	blockReward    uint64     // Base block subsidy in base units.
-	validatorStake uint64     // Exact stake amount required (0 = disabled).
-	genesisHash    types.Hash // Hash of the genesis block (immutable).
+	maxSupply           uint64     // Max coin supply (0 = unlimited).
+	blockReward         uint64     // Base block subsidy in base units.
+	halvingInterval     uint64     // Blocks between reward halvings (0 = disabled).
+	validatorStake      uint64     // Exact stake amount required (0 = disabled).
+	allowMinting        bool       // Whether new token issuance is allowed.
+	registeredSubChains uint64     // Active ScriptTypeRegister outputs on the current chain.
+	genesisHash         types.Hash // Hash of the genesis block (immutable).
 
+	registrationValidator RegistrationValidator
 	registrationHandler   RegistrationHandler
 	deregistrationHandler DeregistrationHandler
 	stakeHandler          StakeHandler
@@ -91,15 +102,20 @@ func New(id types.ChainID, db storage.DB, utxoSet utxo.Set, engine consensus.Eng
 	if tipBlk, err := blocks.GetBlock(tipHash); err == nil {
 		tipTimestamp = tipBlk.Header.Timestamp
 	}
+	registeredSubChains, err := countRegisteredSubChains(utxoSet)
+	if err != nil {
+		return nil, fmt.Errorf("recover sub-chain registrations: %w", err)
+	}
 
 	ch := &Chain{
-		ID:          id,
-		state:       &State{TipHash: tipHash, Height: height, Supply: supply, CumulativeDifficulty: cumDiff, TipTimestamp: tipTimestamp},
-		blocks:      blocks,
-		utxos:       utxoSet,
-		engine:      engine,
-		validator:   consensus.NewValidator(engine),
-		genesisHash: genesisHash,
+		ID:                  id,
+		state:               &State{TipHash: tipHash, Height: height, Supply: supply, CumulativeDifficulty: cumDiff, TipTimestamp: tipTimestamp},
+		blocks:              blocks,
+		utxos:               utxoSet,
+		engine:              engine,
+		validator:           consensus.NewValidator(engine),
+		registeredSubChains: registeredSubChains,
+		genesisHash:         genesisHash,
 	}
 
 	// Check for incomplete reorg — if the node crashed mid-reorg, the UTXO
@@ -120,6 +136,15 @@ func (c *Chain) InitFromGenesis(gen *config.Genesis) error {
 		return fmt.Errorf("chain already initialized at height %d", c.state.Height)
 	}
 
+	// Compute initial supply from genesis allocations with overflow protection.
+	var supply uint64
+	for _, v := range gen.Alloc {
+		if supply > ^uint64(0)-v {
+			return fmt.Errorf("genesis allocation overflow: supply %d + alloc %d exceeds uint64", supply, v)
+		}
+		supply += v
+	}
+
 	blk, err := CreateGenesisBlock(gen)
 	if err != nil {
 		return fmt.Errorf("create genesis: %w", err)
@@ -135,12 +160,6 @@ func (c *Chain) InitFromGenesis(gen *config.Genesis) error {
 		return fmt.Errorf("store genesis: %w", err)
 	}
 
-	// Compute initial supply from genesis allocations.
-	var supply uint64
-	for _, v := range gen.Alloc {
-		supply += v
-	}
-
 	hash := blk.Hash()
 	c.state.TipHash = hash
 	c.state.Height = 0
@@ -151,7 +170,10 @@ func (c *Chain) InitFromGenesis(gen *config.Genesis) error {
 	// Store protocol limits from genesis.
 	c.maxSupply = gen.Protocol.Consensus.MaxSupply
 	c.blockReward = gen.Protocol.Consensus.BlockReward
+	c.halvingInterval = gen.Protocol.Consensus.HalvingInterval
 	c.validatorStake = gen.Protocol.Consensus.ValidatorStake
+	c.allowMinting = gen.Protocol.Token.AllowMinting
+	c.registeredSubChains = 0
 
 	if err := c.blocks.SetTip(hash, 0, supply); err != nil {
 		return fmt.Errorf("set genesis tip: %w", err)
@@ -165,7 +187,18 @@ func (c *Chain) InitFromGenesis(gen *config.Genesis) error {
 func (c *Chain) SetConsensusRules(r config.ConsensusRules) {
 	c.maxSupply = r.MaxSupply
 	c.blockReward = r.BlockReward
+	c.halvingInterval = r.HalvingInterval
 	c.validatorStake = r.ValidatorStake
+}
+
+// SetTokenRules configures token minting rules for runtime validation.
+func (c *Chain) SetTokenRules(r config.TokenRules) {
+	c.allowMinting = r.AllowMinting
+}
+
+// SetRegistrationValidator configures consensus validation for registration outputs.
+func (c *Chain) SetRegistrationValidator(fn RegistrationValidator) {
+	c.registrationValidator = fn
 }
 
 // State returns a copy of the current chain state.
@@ -287,6 +320,7 @@ func (c *Chain) RebuildUTXOs() error {
 	// so that future reorgs can revert blocks properly.
 	var supply uint64
 	var cumDiff uint64
+	c.registeredSubChains = 0
 	for h := uint64(0); h <= c.state.Height; h++ {
 		blk, err := c.blocks.GetBlockByHeight(h)
 		if err != nil {
@@ -309,11 +343,26 @@ func (c *Chain) RebuildUTXOs() error {
 			return fmt.Errorf("store undo at height %d: %w", h, err)
 		}
 
-		if c.maxSupply > 0 && supply+blockReward > c.maxSupply {
-			blockReward = c.maxSupply - supply
+		if c.maxSupply > 0 {
+			if supply >= c.maxSupply {
+				blockReward = 0
+			} else if remaining := c.maxSupply - supply; blockReward > remaining {
+				blockReward = remaining
+			}
 		}
+		if blockReward > ^uint64(0)-supply {
+			return fmt.Errorf("rebuild utxos: supply overflow at height %d: supply %d + reward %d", h, supply, blockReward)
+		}
+		if blk.Header.Difficulty > ^uint64(0)-cumDiff {
+			return fmt.Errorf("rebuild utxos: cumulative difficulty overflow at height %d: cumdiff %d + difficulty %d",
+				h, cumDiff, blk.Header.Difficulty)
+		}
+
 		supply += blockReward
 		cumDiff += blk.Header.Difficulty
+		if err := c.addRegisteredSubChains(countRegisterOutputs(blk)); err != nil {
+			return fmt.Errorf("rebuild utxos: %w", err)
+		}
 	}
 
 	c.state.Supply = supply
@@ -333,6 +382,32 @@ func (c *Chain) RebuildUTXOs() error {
 	}
 
 	return nil
+}
+
+type utxoIterator interface {
+	ForEach(func(*utxo.UTXO) error) error
+}
+
+func countRegisteredSubChains(set utxo.Set) (uint64, error) {
+	iter, ok := set.(utxoIterator)
+	if !ok {
+		return 0, fmt.Errorf("utxo set does not support iteration")
+	}
+
+	var count uint64
+	if err := iter.ForEach(func(u *utxo.UTXO) error {
+		if u.Script.Type != types.ScriptTypeRegister {
+			return nil
+		}
+		if count == ^uint64(0) {
+			return fmt.Errorf("registration count overflow")
+		}
+		count++
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // isPoWEngine returns true if the chain uses proof-of-work consensus.

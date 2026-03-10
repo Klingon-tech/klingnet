@@ -1276,6 +1276,9 @@ func (s *Server) handleWalletMintToken(req *Request) (interface{}, *Error) {
 	if params.Amount > config.MaxTokenAmount {
 		return nil, &Error{Code: CodeInvalidParams, Message: fmt.Sprintf("amount exceeds maximum (%d)", config.MaxTokenAmount)}
 	}
+	if !s.genesis.Protocol.Token.AllowMinting {
+		return nil, &Error{Code: CodeInvalidParams, Message: "token minting is disabled by genesis rules"}
+	}
 	// Validate token metadata.
 	if !tokenNamePattern.MatchString(params.TokenName) {
 		return nil, &Error{Code: CodeInvalidParams, Message: "token_name must be 1-64 alphanumeric/space/hyphen characters"}

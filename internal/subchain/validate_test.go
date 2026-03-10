@@ -22,29 +22,26 @@ func makeRegOutput(value uint64, rd *RegistrationData) tx.Output {
 
 func TestValidateRegistrationTx_Valid(t *testing.T) {
 	rules := testRules()
-	reg := NewRegistry()
 	rd := validPoARegistration()
 	output := makeRegOutput(50*config.Coin, rd)
 
-	if err := ValidateRegistrationTx(output, rules, reg); err != nil {
+	if err := ValidateRegistrationTx(output, rules, 0, 0); err != nil {
 		t.Fatalf("valid registration: %v", err)
 	}
 }
 
 func TestValidateRegistrationTx_InsufficientBurn(t *testing.T) {
 	rules := testRules()
-	reg := NewRegistry()
 	rd := validPoARegistration()
 	output := makeRegOutput(1*config.Coin, rd) // Too low
 
-	if err := ValidateRegistrationTx(output, rules, reg); err == nil {
+	if err := ValidateRegistrationTx(output, rules, 0, 0); err == nil {
 		t.Fatal("expected error for insufficient burn")
 	}
 }
 
 func TestValidateRegistrationTx_BadData(t *testing.T) {
 	rules := testRules()
-	reg := NewRegistry()
 	output := tx.Output{
 		Value: 50 * config.Coin,
 		Script: types.Script{
@@ -53,7 +50,7 @@ func TestValidateRegistrationTx_BadData(t *testing.T) {
 		},
 	}
 
-	if err := ValidateRegistrationTx(output, rules, reg); err == nil {
+	if err := ValidateRegistrationTx(output, rules, 0, 0); err == nil {
 		t.Fatal("expected error for bad registration data")
 	}
 }
@@ -68,7 +65,7 @@ func TestValidateRegistrationTx_WrongScriptType(t *testing.T) {
 		},
 	}
 
-	if err := ValidateRegistrationTx(output, rules, nil); err == nil {
+	if err := ValidateRegistrationTx(output, rules, 0, 0); err == nil {
 		t.Fatal("expected error for wrong script type")
 	}
 }
@@ -76,13 +73,23 @@ func TestValidateRegistrationTx_WrongScriptType(t *testing.T) {
 func TestValidateRegistrationTx_MaxPerParent(t *testing.T) {
 	rules := testRules()
 	rules.MaxPerParent = 1
-	reg := NewRegistry()
-	reg.Register(&SubChain{ID: types.ChainID{1}})
 
 	rd := validPoARegistration()
 	output := makeRegOutput(50*config.Coin, rd)
 
-	if err := ValidateRegistrationTx(output, rules, reg); err == nil {
+	if err := ValidateRegistrationTx(output, rules, 1, 0); err == nil {
 		t.Fatal("expected error when max sub-chains reached")
+	}
+}
+
+func TestValidateRegistrationTx_Disabled(t *testing.T) {
+	rules := testRules()
+	rules.Enabled = false
+
+	rd := validPoARegistration()
+	output := makeRegOutput(50*config.Coin, rd)
+
+	if err := ValidateRegistrationTx(output, rules, 0, 0); err == nil {
+		t.Fatal("expected error when sub-chains are disabled")
 	}
 }

@@ -18,6 +18,8 @@ var (
 	ErrOutputOverflow     = errors.New("output values overflow")
 	ErrNegativeOutput     = errors.New("output value is zero")
 	ErrInvalidScript      = errors.New("invalid script type")
+	ErrMintMissingToken   = errors.New("mint output missing token data")
+	ErrMintNonZeroValue   = errors.New("mint output must have zero native value")
 	ErrMissingPubKey      = errors.New("input missing public key")
 	ErrMissingSig         = errors.New("input missing signature")
 	ErrInvalidSig         = errors.New("invalid signature")
@@ -71,6 +73,9 @@ func (tx *Transaction) Validate() error {
 		if out.Value == 0 && out.Token == nil {
 			return fmt.Errorf("output %d: %w", i, ErrNegativeOutput)
 		}
+		if err := validateOutputScript(out); err != nil {
+			return fmt.Errorf("output %d: %w", i, err)
+		}
 		if len(out.Script.Data) > config.MaxScriptData {
 			return fmt.Errorf("output %d: %w: %d bytes, max %d", i, ErrScriptDataTooLarge, len(out.Script.Data), config.MaxScriptData)
 		}
@@ -81,6 +86,33 @@ func (tx *Transaction) Validate() error {
 	}
 
 	return nil
+}
+
+func validateOutputScript(out Output) error {
+	switch out.Script.Type {
+	case types.ScriptTypeP2PKH, types.ScriptTypeBurn, types.ScriptTypeAnchor, types.ScriptTypeRegister:
+		return nil
+	case types.ScriptTypeMint:
+		if out.Token == nil {
+			return ErrMintMissingToken
+		}
+		if out.Value != 0 {
+			return ErrMintNonZeroValue
+		}
+		if len(out.Script.Data) < types.AddressSize {
+			return fmt.Errorf("%w: mint script data must include at least a %d-byte address", ErrInvalidScript, types.AddressSize)
+		}
+		return nil
+	case types.ScriptTypeStake:
+		if len(out.Script.Data) != 33 {
+			return fmt.Errorf("%w: stake script data length %d, want 33", ErrInvalidScript, len(out.Script.Data))
+		}
+		return nil
+	case types.ScriptTypeP2SH, types.ScriptTypeBridge:
+		return fmt.Errorf("%w: unsupported script type %s", ErrInvalidScript, out.Script.Type)
+	default:
+		return fmt.Errorf("%w: unknown script type %#x", ErrInvalidScript, uint8(out.Script.Type))
+	}
 }
 
 // VerifySignatures checks that all input signatures are valid for this transaction.

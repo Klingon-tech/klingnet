@@ -9,10 +9,18 @@ import (
 )
 
 // ValidateRegistrationTx checks that a ScriptTypeRegister output is valid
-// in the context of protocol rules and the current registry state.
-func ValidateRegistrationTx(output tx.Output, rules *config.SubChainRules, registry *Registry) error {
+// in the context of protocol rules and the current active-chain count.
+// pendingRegistrations is the number of earlier registration outputs already
+// validated in the same block.
+func ValidateRegistrationTx(output tx.Output, rules *config.SubChainRules, existingRegistrations, pendingRegistrations uint64) error {
+	if rules == nil {
+		return fmt.Errorf("sub-chain rules are nil")
+	}
 	if output.Script.Type != types.ScriptTypeRegister {
 		return fmt.Errorf("output is not a registration (type=%s)", output.Script.Type)
+	}
+	if !rules.Enabled {
+		return fmt.Errorf("sub-chains are disabled")
 	}
 
 	// Check burn amount meets minimum deposit.
@@ -31,8 +39,15 @@ func ValidateRegistrationTx(output tx.Output, rules *config.SubChainRules, regis
 	}
 
 	// Check max sub-chains per parent.
-	if registry != nil && rules.MaxPerParent > 0 && registry.Count() >= rules.MaxPerParent {
-		return fmt.Errorf("max sub-chains per parent reached (%d)", rules.MaxPerParent)
+	if rules.MaxPerParent > 0 {
+		max := uint64(rules.MaxPerParent)
+		if existingRegistrations > ^uint64(0)-pendingRegistrations {
+			return fmt.Errorf("registration count overflow")
+		}
+		current := existingRegistrations + pendingRegistrations
+		if current >= max {
+			return fmt.Errorf("max sub-chains per parent reached (%d)", rules.MaxPerParent)
+		}
 	}
 
 	return nil

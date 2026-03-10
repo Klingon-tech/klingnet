@@ -34,14 +34,15 @@ type SupplyFunc func() uint64
 
 // Miner produces new blocks.
 type Miner struct {
-	chain        ChainState
-	engine       consensus.Engine
-	pool         MempoolSelector
-	coinbaseAddr types.Address
-	blockReward  uint64
-	maxSupply    uint64     // 0 = unlimited
-	supplyFn     SupplyFunc // nil = no cap check
-	maxBlockTxs  int
+	chain           ChainState
+	engine          consensus.Engine
+	pool            MempoolSelector
+	coinbaseAddr    types.Address
+	blockReward     uint64
+	halvingInterval uint64     // 0 = disabled
+	maxSupply       uint64     // 0 = unlimited
+	supplyFn        SupplyFunc // nil = no cap check
+	maxBlockTxs     int
 }
 
 // New creates a new block producer.
@@ -57,6 +58,11 @@ func New(chain ChainState, engine consensus.Engine, pool MempoolSelector,
 		supplyFn:     supplyFn,
 		maxBlockTxs:  config.MaxBlockTxs,
 	}
+}
+
+// SetHalvingInterval configures the reward halving schedule for new blocks.
+func (m *Miner) SetHalvingInterval(interval uint64) {
+	m.halvingInterval = interval
 }
 
 // ProduceBlock builds, seals, and returns a new block using the current time.
@@ -96,13 +102,13 @@ func (m *Miner) produceBlock(ctx context.Context, timestamp uint64) (*block.Bloc
 	}
 
 	// Cap block reward to not exceed max supply.
-	reward := m.blockReward
+	reward := m.blockRewardAtHeight(m.chain.Height() + 1)
 	if m.maxSupply > 0 && m.supplyFn != nil {
 		currentSupply := m.supplyFn()
 		if currentSupply >= m.maxSupply {
 			reward = 0
-		} else if currentSupply+reward > m.maxSupply {
-			reward = m.maxSupply - currentSupply
+		} else if remaining := m.maxSupply - currentSupply; reward > remaining {
+			reward = remaining
 		}
 	}
 
@@ -150,6 +156,20 @@ func (m *Miner) produceBlock(ctx context.Context, timestamp uint64) (*block.Bloc
 	}
 
 	return blk, nil
+}
+
+func (m *Miner) blockRewardAtHeight(height uint64) uint64 {
+	if height == 0 || m.blockReward == 0 {
+		return 0
+	}
+	if m.halvingInterval == 0 {
+		return m.blockReward
+	}
+	halvings := (height - 1) / m.halvingInterval
+	if halvings >= 64 {
+		return 0
+	}
+	return m.blockReward >> halvings
 }
 
 // BuildCoinbase creates a coinbase transaction with the given reward.

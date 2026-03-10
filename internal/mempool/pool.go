@@ -22,6 +22,7 @@ var (
 	ErrValidation        = errors.New("transaction failed validation")
 	ErrFeeTooLow         = errors.New("transaction fee below minimum")
 	ErrCoinbaseNotMature = errors.New("coinbase output not mature")
+	ErrMintingDisabled   = errors.New("token minting is disabled")
 )
 
 // entry wraps a transaction with its fee and metadata.
@@ -47,8 +48,9 @@ type Pool struct {
 	coinbaseMaturity uint64        // Required confirmations (0 = disabled).
 
 	// Token validation.
-	tokenInputs token.InputTokens // For token conservation checks (nil = disabled).
-	mintFee     uint64            // Minimum fee for mint transactions (0 = no extra requirement).
+	tokenInputs  token.InputTokens // For token conservation checks (nil = disabled).
+	allowMinting bool              // Whether transactions may create new tokens.
+	mintFee      uint64            // Minimum fee for mint transactions (0 = no extra requirement).
 
 	// Stake validation.
 	stakeAmount uint64 // Exact amount required for stake outputs (0 = disabled).
@@ -60,10 +62,11 @@ func New(utxos tx.UTXOProvider, maxSize int) *Pool {
 		maxSize = 5000
 	}
 	return &Pool{
-		txs:     make(map[types.Hash]*entry),
-		spends:  make(map[types.Outpoint]types.Hash),
-		maxSize: maxSize,
-		utxos:   utxos,
+		txs:          make(map[types.Hash]*entry),
+		spends:       make(map[types.Outpoint]types.Hash),
+		maxSize:      maxSize,
+		utxos:        utxos,
+		allowMinting: true,
 	}
 }
 
@@ -93,6 +96,13 @@ func (p *Pool) SetMintFee(fee uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.mintFee = fee
+}
+
+// SetMintingAllowed enables or disables token issuance in the mempool.
+func (p *Pool) SetMintingAllowed(allowed bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.allowMinting = allowed
 }
 
 // SetStakeAmount sets the exact amount required for stake outputs.
@@ -159,6 +169,11 @@ func (p *Pool) Add(transaction *tx.Transaction) (uint64, error) {
 		return 0, fmt.Errorf("%w: %v", ErrValidation, err)
 	}
 
+	hasMint := token.HasMintOutput(transaction)
+	if hasMint && !p.allowMinting {
+		return 0, fmt.Errorf("%w: %w", ErrValidation, ErrMintingDisabled)
+	}
+
 	// Token validation.
 	if p.tokenInputs != nil {
 		if err := token.ValidateTokens(transaction, p.tokenInputs); err != nil {
@@ -168,7 +183,7 @@ func (p *Pool) Add(transaction *tx.Transaction) (uint64, error) {
 
 	// Mint fee: require higher fee for transactions that create tokens.
 	if p.mintFee > 0 && fee < p.mintFee {
-		if token.HasMintOutput(transaction) {
+		if hasMint {
 			return 0, fmt.Errorf("%w: mint tx needs %d, got %d", ErrFeeTooLow, p.mintFee, fee)
 		}
 	}

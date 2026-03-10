@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/Klingon-tech/klingnet-chain/config"
@@ -69,6 +70,13 @@ func testMultiValidatorChain(t *testing.T, n int) (*Chain, []*crypto.PrivateKey,
 func buildCoinbaseOnlyBlock(t *testing.T, ch *Chain, poa *consensus.PoA, signerKey *crypto.PrivateKey, timestamp uint64) *block.Block {
 	t.Helper()
 
+	state := ch.State()
+	return buildCoinbaseOnlyBlockAt(t, poa, signerKey, state.TipHash, state.Height+1, timestamp)
+}
+
+func buildCoinbaseOnlyBlockAt(t *testing.T, poa *consensus.PoA, signerKey *crypto.PrivateKey, prevHash types.Hash, height, timestamp uint64) *block.Block {
+	t.Helper()
+
 	coinbase := &tx.Transaction{
 		Version: 1,
 		Inputs:  []tx.Input{{PrevOut: types.Outpoint{}}},
@@ -78,15 +86,13 @@ func buildCoinbaseOnlyBlock(t *testing.T, ch *Chain, poa *consensus.PoA, signerK
 		}},
 	}
 	txs := []*tx.Transaction{coinbase}
-
-	state := ch.State()
 	merkle := block.ComputeMerkleRoot([]types.Hash{coinbase.Hash()})
 	header := &block.Header{
 		Version:    block.CurrentVersion,
-		PrevHash:   state.TipHash,
+		PrevHash:   prevHash,
 		MerkleRoot: merkle,
 		Timestamp:  timestamp,
-		Height:     state.Height + 1,
+		Height:     height,
 	}
 	blk := block.NewBlock(header, txs)
 
@@ -200,6 +206,26 @@ func TestSigningLimit_TwoValidators_ConsecutiveDetectedByMinerPrecheck(t *testin
 	}
 }
 
+func TestSigningLimit_TwoValidators_ConsecutiveRejectedByConsensus(t *testing.T) {
+	ch, keys, poa := testMultiValidatorChain(t, 2)
+
+	ts := uint64(1700000003)
+
+	blk1 := buildCoinbaseOnlyBlock(t, ch, poa, keys[0], ts)
+	if err := ch.ProcessBlock(blk1); err != nil {
+		t.Fatalf("block 1: %v", err)
+	}
+
+	blk2 := buildCoinbaseOnlyBlock(t, ch, poa, keys[0], ts+3)
+	err := ch.ProcessBlock(blk2)
+	if err == nil {
+		t.Fatal("expected signing limit violation")
+	}
+	if !errors.Is(err, ErrSigningLimitExceeded) {
+		t.Fatalf("expected ErrSigningLimitExceeded, got: %v", err)
+	}
+}
+
 func TestSigningLimit_FiveValidators_Window3(t *testing.T) {
 	ch, keys, poa := testMultiValidatorChain(t, 5)
 	// N=5, limit=3: must wait 2 blocks between signings.
@@ -300,9 +326,5 @@ func TestSigningLimit_ThreeValidators_Rotation(t *testing.T) {
 	}
 }
 
-// Note: Signing limit is NOT enforced during reorg replay or ProcessBlock.
-// The Clique-style weighted difficulty (in-turn=2, out-of-turn=1) provides
-// sufficient protection: a solo validator's chain always has less cumulative
-// work than a properly rotating chain over the same time period.
-// The checkSigningLimit and IsSigningLimitReached functions are retained for
-// potential future use with fork-schedule-gated activation.
+// Signing-limit consensus enforcement is covered on the fast path here.
+// Reorg replay uses the same checker before replaying a candidate branch.

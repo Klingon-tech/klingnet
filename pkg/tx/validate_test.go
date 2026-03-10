@@ -106,12 +106,40 @@ func TestValidate_ZeroValueWithToken(t *testing.T) {
 		Inputs: []Input{{PrevOut: types.Outpoint{TxID: types.Hash{0x01}}, Signature: []byte("s"), PubKey: []byte("k")}},
 		Outputs: []Output{{
 			Value:  0,
-			Script: types.Script{Type: types.ScriptTypeMint},
+			Script: types.Script{Type: types.ScriptTypeMint, Data: make([]byte, types.AddressSize)},
 			Token:  &types.TokenData{ID: types.TokenID{0xaa}, Amount: 100},
 		}},
 	}
 	if err := tx.Validate(); err != nil {
 		t.Errorf("zero value with token should be valid: %v", err)
+	}
+}
+
+func TestValidate_MintMissingToken(t *testing.T) {
+	transaction := &Transaction{
+		Inputs: []Input{{PrevOut: types.Outpoint{TxID: types.Hash{0x01}}, Signature: []byte("s"), PubKey: []byte("k")}},
+		Outputs: []Output{{
+			Value:  1,
+			Script: types.Script{Type: types.ScriptTypeMint, Data: make([]byte, types.AddressSize)},
+		}},
+	}
+	err := transaction.Validate()
+	if !errors.Is(err, ErrMintMissingToken) {
+		t.Errorf("expected ErrMintMissingToken, got: %v", err)
+	}
+}
+
+func TestValidate_UnsupportedScriptType(t *testing.T) {
+	transaction := &Transaction{
+		Inputs: []Input{{PrevOut: types.Outpoint{TxID: types.Hash{0x01}}, Signature: []byte("s"), PubKey: []byte("k")}},
+		Outputs: []Output{{
+			Value:  1,
+			Script: types.Script{Type: types.ScriptTypeP2SH},
+		}},
+	}
+	err := transaction.Validate()
+	if !errors.Is(err, ErrInvalidScript) {
+		t.Errorf("expected ErrInvalidScript, got: %v", err)
 	}
 }
 

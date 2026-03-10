@@ -3,6 +3,7 @@ package chain
 import (
 	"encoding/hex"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -587,6 +588,43 @@ func TestChain_InitFromGenesis_DoubleInit(t *testing.T) {
 	err := ch.InitFromGenesis(gen)
 	if err == nil {
 		t.Error("double InitFromGenesis should fail")
+	}
+}
+
+func TestChain_InitFromGenesis_AllocOverflow(t *testing.T) {
+	validatorKey, _ := crypto.GenerateKey()
+	poa, _ := consensus.NewPoA([][]byte{validatorKey.PublicKey()}, 3)
+	poa.SetSigner(validatorKey)
+
+	db := storage.NewMemory()
+	utxoStore := utxo.NewStore(db)
+	ch, _ := New(types.ChainID{}, db, utxoStore, poa)
+
+	gen := &config.Genesis{
+		ChainID:   "test-overflow",
+		ChainName: "Test Overflow",
+		Timestamp: 1700000000,
+		Alloc: map[string]uint64{
+			"0000000000000000000000000000000000000001": math.MaxUint64,
+			"0000000000000000000000000000000000000002": 1,
+		},
+		Protocol: config.ProtocolConfig{
+			Consensus: config.ConsensusRules{
+				Type:        config.ConsensusPoA,
+				BlockTime:   3,
+				BlockReward: 1000,
+			},
+			SubChain: config.SubChainRules{
+				MaxDepth:       5,
+				MaxPerParent:   10,
+				AnchorInterval: 10,
+			},
+		},
+	}
+
+	err := ch.InitFromGenesis(gen)
+	if err == nil || !strings.Contains(err.Error(), "overflow") {
+		t.Fatalf("expected alloc overflow error, got: %v", err)
 	}
 }
 
@@ -1311,8 +1349,9 @@ func TestProcessBlock_CoinbaseWithMintScript_Rejected(t *testing.T) {
 		Version: 1,
 		Inputs:  []tx.Input{{PrevOut: types.Outpoint{}}},
 		Outputs: []tx.Output{{
-			Value:  1000,
+			Value:  0,
 			Script: types.Script{Type: types.ScriptTypeMint, Data: make([]byte, 20)},
+			Token:  &types.TokenData{ID: types.TokenID{1, 2, 3}, Amount: 999},
 		}},
 	}
 

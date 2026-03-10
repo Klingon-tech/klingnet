@@ -15,6 +15,7 @@ import (
 	"github.com/Klingon-tech/klingnet-chain/internal/miner"
 	"github.com/Klingon-tech/klingnet-chain/internal/storage"
 	"github.com/Klingon-tech/klingnet-chain/internal/subchain"
+	"github.com/Klingon-tech/klingnet-chain/internal/token"
 	"github.com/Klingon-tech/klingnet-chain/internal/utxo"
 	"github.com/Klingon-tech/klingnet-chain/internal/wallet"
 	"github.com/Klingon-tech/klingnet-chain/pkg/crypto"
@@ -62,6 +63,10 @@ func setupWalletTestEnv(t *testing.T) *walletTestEnv {
 				MaxSupply:   2_000_000 * config.Coin,
 				MinFeeRate:  10,
 			},
+			Token: config.TokenRules{
+				MaxTokensPerUTXO: 1,
+				AllowMinting:     true,
+			},
 		},
 	}
 
@@ -88,6 +93,9 @@ func setupWalletTestEnv(t *testing.T) *walletTestEnv {
 	adapter := miner.NewUTXOAdapter(utxoStore)
 	pool := mempool.New(adapter, 1000)
 	pool.SetMinFeeRate(gen.Protocol.Consensus.MinFeeRate)
+	pool.SetTokenValidator(&token.UTXOTokenAdapter{Set: utxoStore})
+	pool.SetMintingAllowed(gen.Protocol.Token.AllowMinting)
+	pool.SetMintFee(config.TokenCreationFee)
 
 	srv := New("127.0.0.1:0", ch, utxoStore, pool, nil, gen, engine)
 

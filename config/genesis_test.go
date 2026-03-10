@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"math"
+	"strings"
+	"testing"
+)
 
 func TestForkSchedule_IsActive_ZeroNotScheduled(t *testing.T) {
 	fs := ForkSchedule{}
@@ -48,5 +52,18 @@ func TestGenesis_Validate_TestnetValid(t *testing.T) {
 	g := TestnetGenesis()
 	if err := g.Validate(); err != nil {
 		t.Errorf("testnet genesis should be valid: %v", err)
+	}
+}
+
+func TestGenesis_Validate_AllocOverflow(t *testing.T) {
+	g := MainnetGenesis()
+	g.Alloc = map[string]uint64{
+		"0000000000000000000000000000000000000001": math.MaxUint64,
+		"0000000000000000000000000000000000000002": 1,
+	}
+
+	err := g.Validate()
+	if err == nil || !strings.Contains(err.Error(), "overflow") {
+		t.Fatalf("expected overflow validation error, got: %v", err)
 	}
 }
