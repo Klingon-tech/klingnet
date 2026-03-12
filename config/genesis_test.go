@@ -55,6 +55,33 @@ func TestGenesis_Validate_TestnetValid(t *testing.T) {
 	}
 }
 
+func TestConsensusRules_BlockSubsidy(t *testing.T) {
+	tests := []struct {
+		name     string
+		reward   uint64
+		halving  uint64
+		height   uint64
+		want     uint64
+	}{
+		{"genesis returns 0", 1000, 0, 0, 0},
+		{"no halving", 1000, 0, 100, 1000},
+		{"zero reward", 0, 10, 5, 0},
+		{"before first halving", 1000, 10, 1, 1000},
+		{"at first halving", 1000, 10, 11, 500},
+		{"at second halving", 1000, 10, 21, 250},
+		{"64+ halvings returns 0", 1000, 1, 65, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := ConsensusRules{BlockReward: tt.reward, HalvingInterval: tt.halving}
+			got := r.BlockSubsidy(tt.height)
+			if got != tt.want {
+				t.Errorf("BlockSubsidy(%d) = %d, want %d", tt.height, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGenesis_Validate_AllocOverflow(t *testing.T) {
 	g := MainnetGenesis()
 	g.Alloc = map[string]uint64{

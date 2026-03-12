@@ -130,6 +130,22 @@ type ConsensusRules struct {
 	ValidatorStake uint64 `json:"validator_stake,omitempty"` // Min stake to become validator (base units, 0 = no staking)
 }
 
+// BlockSubsidy returns the block reward at the given height after halvings.
+// Height 0 (genesis) always returns 0.
+func (r ConsensusRules) BlockSubsidy(height uint64) uint64 {
+	if height == 0 || r.BlockReward == 0 {
+		return 0
+	}
+	if r.HalvingInterval == 0 {
+		return r.BlockReward
+	}
+	halvings := (height - 1) / r.HalvingInterval
+	if halvings >= 64 {
+		return 0
+	}
+	return r.BlockReward >> halvings
+}
+
 // SubChainRules defines sub-chain protocol limits.
 type SubChainRules struct {
 	// Whether sub-chains are enabled

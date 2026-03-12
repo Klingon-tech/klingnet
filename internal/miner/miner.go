@@ -159,17 +159,10 @@ func (m *Miner) produceBlock(ctx context.Context, timestamp uint64) (*block.Bloc
 }
 
 func (m *Miner) blockRewardAtHeight(height uint64) uint64 {
-	if height == 0 || m.blockReward == 0 {
-		return 0
-	}
-	if m.halvingInterval == 0 {
-		return m.blockReward
-	}
-	halvings := (height - 1) / m.halvingInterval
-	if halvings >= 64 {
-		return 0
-	}
-	return m.blockReward >> halvings
+	return config.ConsensusRules{
+		BlockReward:     m.blockReward,
+		HalvingInterval: m.halvingInterval,
+	}.BlockSubsidy(height)
 }
 
 // BuildCoinbase creates a coinbase transaction with the given reward.
